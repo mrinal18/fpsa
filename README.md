@@ -42,9 +42,9 @@ At ~10M parameters (4L x 256), the FPSA architecture achieved:
 ## Citation
 If you use this code or find our work helpful, please cite:
 ```bibtex
-@article{fpsa_bert_2025,
-  title={Fixed-Point Self-Attention for Memory-Efficient Iterative Transformers},
-  author={Your Name},
+@article{mathur2025change,
+  title={Change of Thought: Adaptive Test-Time Computation},
+  author={Mathur, Mrinal and Doan, Mike and Pearlmutter, Barak and Plis, Sergey},
   journal={arXiv preprint arXiv:2507.13569},
   year={2025}
 }
