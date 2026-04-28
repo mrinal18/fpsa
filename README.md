@@ -6,7 +6,7 @@ FPSA is an iterative attention mechanism that mathematically mirrors the Self-Tr
 
 ## Architecture
 
-![BERT-FPSA Architecture](./architecture.png)
+![BERT-FPSA Architecture](./bert_fpsa_architecture_v2.svg)
 
 1. **Pretrained Compatibility:** `W_Q`, `W_K`, `W_O` are kept *inside* the FPI loop to correctly preserve the residual stream subspace, allowing seamless reuse of pretrained BERT weights.
 2. **Fixed V:** Value projections `V = W_V(x)` are computed once statically outside the loop to prevent feature collapse.
