@@ -1,5 +1,9 @@
 # FPSA-BERT (Fixed-Point Self-Attention)
 
+[![arXiv](https://img.shields.io/badge/arXiv-2507.13569-b31b1b.svg)](https://arxiv.org/abs/2507.13569)
+
+**Official PyTorch implementation for the paper on arXiv: [2507.13569](https://arxiv.org/abs/2507.13569)**
+
 This repository contains the PyTorch implementation of **Fixed-Point Self-Attention (FPSA)** for BERT.
 
 FPSA is an iterative attention mechanism that mathematically mirrors the Self-Transformer framework. Instead of stacking $L$ separate self-attention layers with $O(L)$ parameters, FPSA drives a single attention block to convergence via a Fixed-Point Iteration (FPI) loop. It utilizes **Rotary Position Embeddings (RoPE)** to maintain spatial awareness across iterations and relies on an $O(1)$ memory **Phantom Gradient** (Neumann-RBP implicit differentiation) solver to backpropagate through the iterative convergence.
@@ -34,3 +38,14 @@ At ~10M parameters (4L x 256), the FPSA architecture achieved:
 ## Next Steps
 - Stage 2: WikiText-103 scaling (30M parameters).
 - Stage 3: Full BookCorpus + Wikipedia pretraining (110M parameters).
+
+## Citation
+If you use this code or find our work helpful, please cite:
+```bibtex
+@article{fpsa_bert_2025,
+  title={Fixed-Point Self-Attention for Memory-Efficient Iterative Transformers},
+  author={Your Name},
+  journal={arXiv preprint arXiv:2507.13569},
+  year={2025}
+}
+```
