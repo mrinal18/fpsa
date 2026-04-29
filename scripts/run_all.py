@@ -8,8 +8,27 @@ from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
 from src.config import BertConfig, TrainConfig
 from src.model import BertForMaskedLM, BertForSequenceClassification
-from src.data_utils import MLMDataset, GlueDataset
+from src.data_utils import MLMDataset, GlueDataset, load_task, tokenizer
 
+from datasets import load_dataset
+import torch
+from torch.utils.data import Dataset, DataLoader
+import random
+
+WT2 = load_dataset("wikitext", "wikitext-2-raw-v1")
+print(f"WikiText-2: train={len(WT2['train'])}, val={len(WT2['validation'])}")
+
+# Concatenate all training text, tokenize once, then chunk into fixed-length blocks
+print("Tokenizing WikiText-2 train...")
+all_train_text = "\n".join([x["text"] for x in WT2["train"] if x["text"].strip()])
+train_tokens = tokenizer(all_train_text, add_special_tokens=False,
+                         return_tensors=None)["input_ids"]
+print(f"  total tokens: {len(train_tokens):,}")
+
+all_val_text = "\n".join([x["text"] for x in WT2["validation"] if x["text"].strip()])
+val_tokens = tokenizer(all_val_text, add_special_tokens=False,
+                       return_tensors=None)["input_ids"]
+print(f"  val tokens:   {len(val_tokens):,}")
 
 
 MLM_BLOCK = 128

@@ -1,6 +1,24 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+import random
+from transformers import AutoTokenizer
+from datasets import load_dataset
+
+TOKENIZER_NAME = "bert-base-uncased"
+MAX_LEN = 128
+tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+
+GLUE_TASKS = {
+    "sst2":  {"hf_name": ("glue", "sst2"),  "fields": ("sentence", None),               "num_labels": 2},
+    "mrpc":  {"hf_name": ("glue", "mrpc"),  "fields": ("sentence1", "sentence2"),       "num_labels": 2},
+    "rte":   {"hf_name": ("glue", "rte"),   "fields": ("sentence1", "sentence2"),       "num_labels": 2},
+    "cola":  {"hf_name": ("glue", "cola"),  "fields": ("sentence", None),               "num_labels": 2},
+    "stsb":  {"hf_name": ("glue", "stsb"),  "fields": ("sentence1", "sentence2"),       "num_labels": 1},
+    "qnli":  {"hf_name": ("glue", "qnli"),  "fields": ("question", "sentence"),         "num_labels": 2},
+    "qqp":   {"hf_name": ("glue", "qqp"),   "fields": ("question1", "question2"),       "num_labels": 2},
+    "mnli":  {"hf_name": ("glue", "mnli"),  "fields": ("premise", "hypothesis"),        "num_labels": 3},
+}
 
 class GlueDataset(Dataset):
     def __init__(self, split, field1, field2):
@@ -26,6 +44,22 @@ class GlueDataset(Dataset):
             "attention_mask": enc["attention_mask"].squeeze(0),
             "label": torch.tensor(ex["label"], dtype=torch.long),
         }
+
+def load_task(task_name, train_max=None, val_max=None):
+    spec = GLUE_TASKS[task_name]
+    ds = load_dataset(*spec["hf_name"])
+    train_split = "train"
+    val_split = "validation"
+    if task_name == "mnli":
+        val_split = "validation_matched"
+    train = ds[train_split]
+    val = ds[val_split]
+    if train_max:
+        train = train.select(range(min(train_max, len(train))))
+    if val_max:
+        val = val.select(range(min(val_max, len(val))))
+    f1, f2 = spec["fields"]
+    return GlueDataset(train, f1, f2), GlueDataset(val, f1, f2), spec["num_labels"]
 
 class MLMDataset(Dataset):
     """Chunks a flat list of token ids into fixed-length blocks with MLM masking."""
@@ -68,4 +102,3 @@ class MLMDataset(Dataset):
             "attention_mask": torch.ones(len(ids), dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
         }
-
