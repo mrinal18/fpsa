@@ -716,3 +716,61 @@ class BertForSequenceClassification(nn.Module):
             out["loss"] = F.cross_entropy(logits, labels)
         return out
 
+
+
+def _maybe_spectral_norm(linear: nn.Linear) -> nn.Linear:
+    """Apply spectral normalization using the modern parametrization API.
+
+    The legacy nn.utils.spectral_norm has attribute-access issues in recent
+    PyTorch. torch.nn.utils.parametrizations.spectral_norm is the replacement.
+    """
+    from torch.nn.utils.parametrizations import spectral_norm
+    return spectral_norm(linear, name="weight")
+
+def _build_attention(cfg: BertConfig) -> nn.Module:
+    if cfg.attention_type == "fpsa":
+        return FPSAAttention(
+            hidden_size=cfg.hidden_size,
+            num_heads=cfg.num_attention_heads,
+            dropout=cfg.hidden_dropout_prob,                  # output dropout
+            attn_dropout=cfg.attention_probs_dropout_prob,    # on attention probs (variational)
+            tol=cfg.fpsa_tol,
+            max_iter=cfg.fpsa_max_iter,
+            implicit_grad=cfg.fpsa_implicit_grad,
+            adjoint_steps=cfg.fpsa_adjoint_max_iter if cfg.fpsa_implicit_grad else 0,
+            spectral_norm=cfg.fpsa_spectral_norm,
+            temperature=cfg.fpsa_temperature,
+            selective_freeze=cfg.fpsa_selective_freeze,
+            damping=cfg.fpsa_damping,
+            skip_tol=cfg.fpsa_skip_tol,
+            conv_exit_frac=cfg.fpsa_conv_exit_frac,
+            use_rope=getattr(cfg, "use_rope", False),
+            max_seq_len=cfg.max_position_embeddings,
+        )
+    if cfg.attention_type == "vanilla":
+        return VanillaAttention(
+            hidden_size=cfg.hidden_size,
+            num_heads=cfg.num_attention_heads,
+            dropout=cfg.attention_probs_dropout_prob,
+        )
+    if cfg.attention_type == "iterated":
+        return IteratedAttention(
+            hidden_size=cfg.hidden_size,
+            num_heads=cfg.num_attention_heads,
+            T=cfg.iter_T,
+            dropout=cfg.attention_probs_dropout_prob,
+            use_rope=getattr(cfg, "use_rope", False),
+            max_seq_len=cfg.max_position_embeddings,
+        )
+    raise ValueError(f"Unknown attention_type: {cfg.attention_type}")
+
+def _make_attn_mask(attention_mask: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    """
+    Convert HF-style 0/1 attention_mask (B, N) to additive mask (B, 1, 1, N)
+    with 0 for keep and large negative for mask.
+    """
+    if attention_mask is None:
+        return None
+    # (B, N) -> (B, 1, 1, N)
+    mask = attention_mask[:, None, None, :].to(torch.float32)
+    return (1.0 - mask) * -10000.0
