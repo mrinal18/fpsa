@@ -363,6 +363,8 @@ class SpatialFPSALayer(nn.Module):
         max_grid_size: int = 32,
     ):
         super().__init__()
+        self.norm_attn = nn.LayerNorm(d_model)
+        self.dropout_attn = nn.Dropout(dropout)
         self.attn = SpatialFPSAAttention(
             d_model=d_model,
             num_heads=num_heads,
@@ -385,9 +387,10 @@ class SpatialFPSALayer(nn.Module):
         )
 
     def forward(self, x, row_ids, col_ids):
-        # FPSA attention with residual
-        z_star, attn_info = self.attn(x, row_ids, col_ids)
-        x = x + (z_star - x)  # residual (z_star started from x)
+        # FPSA attention with PROPER residual connection
+        # z_star acts as the update vector computed by the iterative loop
+        z_star, attn_info = self.attn(self.norm_attn(x), row_ids, col_ids)
+        x = x + self.dropout_attn(z_star)
 
         # FFN with Pre-LN and residual
         x = x + self.ffn(self.norm_ffn(x))
