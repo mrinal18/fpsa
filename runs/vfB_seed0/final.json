@@ -1,0 +1,9 @@
+{
+  "final_cell_acc": 0.11265432098765432,
+  "final_exact_acc": 0.0,
+  "params": 51279,
+  "steps_run": 40,
+  "stop_reason": "steps_complete",
+  "n_test": 8,
+  "guard_steps": 0
+}

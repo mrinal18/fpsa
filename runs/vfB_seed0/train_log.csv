@@ -1,0 +1,2 @@
+step,loss,cell_acc,exact_acc,ema_cell_acc,ema_exact_acc,fpi_iters,res_first,res_last,converged_frac,jac_sigma,guard,sec_per_step
+1,2.5447,0.1991,0.0000,0.1127,0.0000,9,1.325e-01,4.898e-04,1.000,0.501,0,0.38

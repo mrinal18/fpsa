@@ -1,0 +1,40 @@
+# GATE 2: Sudoku-Extreme, HRM/TRM protocol (1k train puzzles x 1000 augs).
+# Data: build with THEIR script (zero drift):
+#   python dataset/build_sudoku_dataset.py \
+#     --output-dir data/sudoku-extreme-1k-aug-1000 --subsample-size 1000 --num-aug 1000
+name: gate2_sudoku
+seed: 0
+data_dir: data/sudoku-extreme-1k-aug-1000
+
+# model (untuned first-pass; ~3.3M params at d=512)
+d_model: 512
+num_heads: 8           # head_dim 64, % 4 == 0 for 2D RoPE
+value_mode: fixed_ffn  # winner of toy ablation; evolving is the alt candidate
+damping: 0.5
+spectral_norm: true
+ffn_mult: 4.0
+
+# solver
+max_iter: 32
+tol: 1.0e-3
+backward: neumann
+neumann_steps: 8
+
+# stability (guard v2)
+jac_reg_weight: 1.0
+jac_rho_target: 0.85
+jac_power_iters: 4
+divergence_guard: true
+guard_thresh: 0.15
+guard_res_weight: 1.0
+freeze_sn: true
+
+# training (A100). TRM reference: 50k "epochs", lr 1e-4, wd 1.0, EMA — ~18h L40S.
+steps: 200000
+batch_size: 768
+lr: 1.0e-4
+weight_decay: 1.0
+ema: true
+ema_decay: 0.999
+eval_every: 2000
+eval_subset: 2048      # in-training eval subset; final eval = full test split

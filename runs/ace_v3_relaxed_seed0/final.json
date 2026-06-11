@@ -1,0 +1,5 @@
+{
+  "final_test_tok_acc": 0.9974375,
+  "final_test_seq_acc": 0.987,
+  "steps_run": 3000
+}

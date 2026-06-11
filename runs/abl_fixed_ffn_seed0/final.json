@@ -1,0 +1,7 @@
+{
+  "final_test_tok_acc": 0.999875,
+  "final_test_seq_acc": 0.999,
+  "params": 33606,
+  "steps_run": 1000,
+  "stop_reason": "early_stop_acc"
+}
