@@ -1,0 +1,12 @@
+name: trmfp_parity
+d_model: 64
+num_heads: 4
+n_inner: 8
+T_outer: 4
+tol: 1.0e-3
+neumann_steps: 12
+steps: 2500
+batch: 128
+lr: 1.0e-3
+wd: 0.01
+eval_every: 100
