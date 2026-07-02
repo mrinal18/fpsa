@@ -1,5 +1,8 @@
 # fpsa-bench — fixed-point reasoning benchmark (branch: `ace-bench`)
 
+**Pinned goal: docs/GOAL.md** — read it first; it defines the hypotheses,
+falsifiable success criteria, and gate discipline.
+
 Validation ladder for **fixed-point looped transformers** on symbolic
 reasoning, developed as a gated experimental program. Two architectures:
 
