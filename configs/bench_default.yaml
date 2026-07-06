@@ -1,0 +1,15 @@
+d_model: 64
+num_heads: 4
+n_inner: 12
+T_outer: 3
+bwd_k: 6
+tol: 1.0e-3
+ffn_mult: 2.0
+freeze_eps: 0.0
+steps: 2000
+batch: 64
+lr: 1.0e-3
+wd: 0.01
+ema_decay: 0.999
+eval_every: 100
+path_weight: 5.0

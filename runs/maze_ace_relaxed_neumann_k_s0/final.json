@@ -1,0 +1,14 @@
+{
+  "final": {
+    "cell_accuracy": 0.8871527910232544,
+    "solved_accuracy": 0.0,
+    "path_precision": 0.0,
+    "path_recall": 0.0,
+    "path_f1": 0.0,
+    "copy_cell_baseline": 0.899498462677002,
+    "converged_frac": 1.0,
+    "mean_steps": 15.0,
+    "final_residual": 0.00041322672041133046
+  },
+  "steps": 400
+}

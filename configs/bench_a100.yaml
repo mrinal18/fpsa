@@ -1,0 +1,15 @@
+d_model: 256
+num_heads: 8
+n_inner: 16
+T_outer: 4
+bwd_k: 8
+tol: 1.0e-3
+ffn_mult: 2.0
+freeze_eps: 0.0
+steps: 30000
+batch: 256
+lr: 3.0e-4
+wd: 0.1
+ema_decay: 0.999
+eval_every: 500
+path_weight: 3.0

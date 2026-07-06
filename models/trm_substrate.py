@@ -184,6 +184,8 @@ class TRMSubstrate(nn.Module):
                 break
         rec["token_iters"] = used.mean().item()
         rec["frozen_frac"] = frozen.float().mean().item()
+        rec["iters"] = k + 1
+        rec["res_sample"] = res.detach().amax(-1)   # per-sample Linf residual
         return z
 
     # ---------- one supervised segment with the H1 backward axis ----------
@@ -229,10 +231,11 @@ class TRMSubstrate(nn.Module):
     def forward(self, tokens):
         x = self.embed(tokens)
         y = x
-        rec = {"res_z": [], "seg_losses": None}
+        rec = {"res_z": [], "seg_losses": None, "total_iters": 0}
         logits_per_seg = []
         for t in range(self.T_outer):
             y = self.segment(x, y, rec)
+            rec["total_iters"] += rec.get("iters", 0)
             logits_per_seg.append(self.head(self.head_norm(y)))
             y = y.detach()               # TRM-style segment detachment
         rec["rounds"] = self.T_outer

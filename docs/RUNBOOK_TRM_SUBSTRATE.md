@@ -54,3 +54,26 @@ G-B stabilizer port -> A2 joins; blended-inversion test (A4 under enforced
 G-C Sudoku-Extreme via data/sudoku.py protocol + gate2 configs adapted to
     TRMSubstrate (add EMA + their recipe). Bar: TRM ~87 / FPRM 94.2.
 G-D freezing curves + freeze-maps on the G-C winner.
+
+## Benchmark harness (Sudoku + Maze, all arms) — train/train_bench.py
+Data:
+  sudoku: their builder output via data/sudoku.py (verified byte-equivalent)
+  maze:   their builder output via data/maze.py loader (encoding verified
+          against TRM source: PAD/#/space/S/G/o = 0..5; dihedral x8 train aug
+          is THEIR builder's job — run it with aug=True)
+Metrics per eval (EMA model): sudoku cell/board; maze cell/solved/path
+P/R/F1 + copy_cell_baseline; both: converged_frac (per-sample Linf res <
+tol), mean_steps, final_residual — matching the ablation dashboards.
+CPU smoke status: 10/10 task x arm combinations pass; ace_relaxed maze
+sanity converges every solve (res ~3e-4, 15 iters flat) and plateaus at
+the copy baseline with f1=0 at toy scale — the copy_cell_baseline panel
+catching exactly the failure it was designed for. Escape levers:
+path_weight config (added) + real training budgets.
+A100 commands (per arm x task, 3 seeds):
+  python3 train/train_bench.py --task sudoku --arm {A} --backward neumann_k \
+      --config configs/bench_a100.yaml --data_root <their sudoku out> --seed S
+  python3 train/train_bench.py --task maze   --arm {A} --backward neumann_k \
+      --config configs/bench_a100.yaml --data_root <their maze out>   --seed S
+H1 axis: repeat winner arms with --backward bptt_k and phantom1.
+Reminder: fixed/fixed_ffn/evolving/blended still need the jac-reg/guard
+port before neumann training; they run today as bptt_k arms.
