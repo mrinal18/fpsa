@@ -69,8 +69,8 @@ class _Core(nn.Module):
 
 
 class _Pack:
-    def __init__(self, fzA, z0, k):
-        self.fzA, self.z0, self.k = fzA, z0, k
+    def __init__(self, fzA, z0, k, rec=None):
+        self.fzA, self.z0, self.k, self.rec = fzA, z0, k, rec
 
 
 class _ImplicitAttach(torch.autograd.Function):
@@ -87,9 +87,15 @@ class _ImplicitAttach(torch.autograd.Function):
     @staticmethod
     def backward(ctx, g):
         p = ctx.pack
-        lam = g
+        lam, term = g, g
         for _ in range(p.k - 1):
-            lam = torch.autograd.grad(p.fzA, p.z0, lam, retain_graph=True)[0] + g
+            term = torch.autograd.grad(p.fzA, p.z0, term, retain_graph=True)[0]
+            lam = lam + term
+        if p.rec is not None:
+            # certificate C3: adjoint tail ||(J^T)^{k-1} g|| / ||g||
+            # (truncation error <= tail * sigma/(1-sigma) when sigma<1)
+            p.rec.setdefault("adjoint_tail", []).append(
+                (term.norm() / g.norm().clamp(min=1e-30)).item())
         ctx.pack = None
         p.fzA = p.z0 = None
         return None, lam, None
@@ -102,11 +108,13 @@ class TRMSubstrate(nn.Module):
                  tol=1e-3, ffn_mult=2.0,
                  backward="neumann_k", bwd_k=6,
                  freeze_eps=0.0,   # 0 = freezing off; >0 = per-token halting
+                 jac_reg=False, jac_power_iters=4,
                  ace_beta=(0.2, 0.8), ace_R=3.0):
         super().__init__()
         self.vm, self.backward, self.bwd_k = value_mode, backward, bwd_k
         self.n_inner, self.T_outer, self.alpha, self.tol = n_inner, T_outer, alpha, tol
         self.freeze_eps = freeze_eps
+        self.jac_reg, self.jac_power_iters = jac_reg, jac_power_iters
         self.embed = nn.Embedding(vocab_size, d_model)
         self.ln_x, self.ln_y, self.ln_z = (nn.LayerNorm(d_model) for _ in range(3))
         use_ffn = ffn_mult if value_mode == "fixed_ffn" else 0.0
@@ -225,7 +233,24 @@ class TRMSubstrate(nn.Module):
         stB = self.ace_ctx(x, y_t) if self.vm == "ace_relaxed" else None
         fzA = self.f_z(z0, x.detach(), y_t.detach(), ace_static=stA)
         fzB = self.f_z(z_star.detach(), x, y_t, ace_static=stB)
-        z_att = _ImplicitAttach.apply(z_star.detach(), fzB, _Pack(fzA, z0, k))
+        z_att = _ImplicitAttach.apply(z_star.detach(), fzB, _Pack(fzA, z0, k, rec))
+        if self.jac_reg and self.training:
+            # differentiable sigma_hat(J) at z*: p-1 detached power iters to
+            # find the top direction, final VJP with create_graph for the
+            # penalty gradient (double-backward through f_z once).
+            u = torch.randn_like(z0); u = u / u.norm()
+            with torch.no_grad():
+                for _ in range(self.jac_power_iters - 1):
+                    u = torch.autograd.grad(fzA, z0, u, retain_graph=True)[0]
+                    u = u / u.norm().clamp(min=1e-30)
+            Ju = torch.autograd.grad(fzA, z0, u, retain_graph=True,
+                                     create_graph=True)[0]
+            rec.setdefault("sigma_hats", []).append(Ju.norm())
+            # differentiable exit residual (guard-v2 escape): pulls f_z(z*)
+            # toward z* through the PARAMETERS (z* held fixed).
+            rec.setdefault("exit_res", []).append(
+                ((fzB - z_star.detach()).norm(dim=-1) /
+                 z_star.detach().norm(dim=-1).clamp(min=1e-8)).mean())
         return self.f_y(y_t, z_att)
 
     def forward(self, tokens):

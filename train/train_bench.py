@@ -97,7 +97,9 @@ def main():
                      value_mode=a.arm, backward=a.backward, bwd_k=cfg["bwd_k"],
                      n_inner=cfg["n_inner"], T_outer=cfg["T_outer"], tol=cfg["tol"],
                      pos_mode="2d", grid_hw=grid, ffn_mult=cfg.get("ffn_mult", 2.0),
-                     freeze_eps=cfg.get("freeze_eps", 0.0)).to(device)
+                     freeze_eps=cfg.get("freeze_eps", 0.0),
+                     jac_reg=cfg.get("jac_reg_weight", 0.0) > 0,
+                     jac_power_iters=cfg.get("jac_power_iters", 4)).to(device)
     opt = torch.optim.AdamW(m.parameters(), lr=cfg["lr"], weight_decay=cfg["wd"])
     ema = EMA(m, cfg.get("ema_decay", 0.999))
     g = torch.Generator().manual_seed(a.seed); start = 0
@@ -130,10 +132,21 @@ def main():
         idx = torch.randint(0, len(xtr), (cfg["batch"],), generator=g)
         xb, yb = xtr[idx].to(device), ytr[idx].to(device)
         logits, rec = m(xb)
-        loss = sum(F.cross_entropy(l.view(-1, vocab), yb.view(-1), ignore_index=0,
-                                   weight=cw) for l in logits) / len(logits)
+        ce = sum(F.cross_entropy(l.view(-1, vocab), yb.view(-1), ignore_index=0,
+                                 weight=cw) for l in logits) / len(logits)
+        loss, sig = ce, float("nan")
+        if rec.get("sigma_hats"):
+            sig_t = torch.stack(rec["sigma_hats"]).mean()
+            sig = sig_t.item()
+            pen = cfg.get("jac_reg_weight", 0.0) *                 F.relu(sig_t - cfg.get("jac_rho_target", 0.85)) ** 2
+            # guard v2: on diverged solves, train stability terms instead of CE
+            if cfg.get("divergence_guard", False) and                     rec["res_sample"].mean().item() > cfg.get("guard_thresh", 0.15):
+                loss = pen + cfg.get("guard_res_weight", 1.0) *                     torch.stack(rec["exit_res"]).mean()
+            else:
+                loss = ce + pen
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step(); ema.update(m)
+        rec["sigma_hats"] = rec["exit_res"] = None   # break graph refs (leak hygiene)
         del logits
         if step % 50 == 0: gc.collect()
         if step % cfg["eval_every"] == 0 or step == 1:

@@ -13,3 +13,9 @@ wd: 0.01
 ema_decay: 0.999
 eval_every: 100
 path_weight: 5.0
+jac_reg_weight: 1.0
+jac_rho_target: 0.85
+jac_power_iters: 4
+divergence_guard: true
+guard_thresh: 0.15
+guard_res_weight: 1.0
