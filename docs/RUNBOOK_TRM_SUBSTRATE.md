@@ -77,3 +77,34 @@ A100 commands (per arm x task, 3 seeds):
 H1 axis: repeat winner arms with --backward bptt_k and phantom1.
 Reminder: fixed/fixed_ffn/evolving/blended still need the jac-reg/guard
 port before neumann training; they run today as bptt_k arms.
+
+## Equilibrium-validity acceptance criteria (added after external review)
+A run may be described as an "equilibrium model" ONLY if, at eval:
+  E1 converged_frac >= 0.95 at trained depth (per-sample Linf res < tol)
+  E2 k-extrapolation non-degrading: acc_k2x and acc_k4x >= acc(trained) - 1pp
+  E3 adjoint health: median adjoint_tail < 0.1; adjoint_truncated rare
+Runs failing E1-E3 are recurrent nets with a residual monitor — report them
+as such. Rationale: unrolled-trained models show converged_frac ~ 0,
+accuracy peaking AT trained depth then dropping, and implicit/explicit
+gradient cosine decaying with K (external diagnostics on the prototype);
+all three are predicted for non-equilibrium training and are now measured
+routinely (acc_k{0.5,2,4}x columns; adjoint_tail; adjoint_truncated).
+converged_frac alone is NOT success: convergence to a degenerate attractor
+(evolving arm: conv 0.25, 11% cell) is failure with a good-looking metric —
+E2 is the guard against that.
+
+## Operator axis (added after external review)
+input_injection: true  -> z+ = (1-a)z + a(x + Attn(z; V))   [bench operator]
+input_injection: false -> z+ = (1-a)z + a( Attn(z; V(x,..)))[prototype op.]
+Same Jacobian dz (contraction analysis transfers verbatim); different
+fixed-point SELECTION. Hypothesis to test at G-A: injection prevents the
+degenerate-attractor mode; non-injected arms reproduce the prototype's
+converge-but-collapse behavior.
+
+## H1, sharpened by the external diagnostics
+Endpoints now include (per arm, per estimator): accuracy, converged_frac,
+acc_k{0.5,2,4}x, gradient-agreement probe (eval/trm_substrate_gradcheck.py
+style, run at 3 checkpoints), adjoint_tail distribution. Prediction on
+record: implicit-trained arms satisfy E1-E3; bptt_k-trained arms fail E2
+(peak at trained depth). If THAT is falsified, the equilibrium payoff
+claim is in genuine trouble and GOAL.md H1 gets revised.

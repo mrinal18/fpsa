@@ -63,6 +63,13 @@ def evaluate(model, task, x, y, tol, batch=256, max_n=1024):
     m["converged_frac"] = torch.cat(conv).mean().item()
     m["mean_steps"] = sum(steps) / len(steps)
     m["final_residual"] = sum(res) / len(res)
+    # k-extrapolation: equilibrium models must NOT degrade past trained depth
+    n0 = model.n_inner
+    for mult, key in [(0.5, "acc_k0.5x"), (2, "acc_k2x"), (4, "acc_k4x")]:
+        model.n_inner = max(1, int(n0 * mult))
+        lg, _ = model(x[:256])
+        m[key] = (lg[-1].argmax(-1) == y[:256]).float().mean().item()
+    model.n_inner = n0
     model.train()
     return m
 
@@ -99,14 +106,16 @@ def main():
                      pos_mode="2d", grid_hw=grid, ffn_mult=cfg.get("ffn_mult", 2.0),
                      freeze_eps=cfg.get("freeze_eps", 0.0),
                      jac_reg=cfg.get("jac_reg_weight", 0.0) > 0,
-                     jac_power_iters=cfg.get("jac_power_iters", 4)).to(device)
+                     jac_power_iters=cfg.get("jac_power_iters", 4),
+                     input_injection=cfg.get("input_injection", True)).to(device)
     opt = torch.optim.AdamW(m.parameters(), lr=cfg["lr"], weight_decay=cfg["wd"])
     ema = EMA(m, cfg.get("ema_decay", 0.999))
     g = torch.Generator().manual_seed(a.seed); start = 0
     fields = ["step", "loss"] + (["cell_accuracy", "board_accuracy"] if a.task == "sudoku"
               else ["cell_accuracy", "solved_accuracy", "path_precision",
                     "path_recall", "path_f1", "copy_cell_baseline"]) + \
-             ["converged_frac", "mean_steps", "final_residual", "sps"]
+             ["converged_frac", "mean_steps", "final_residual",
+              "acc_k0.5x", "acc_k2x", "acc_k4x", "sps"]
     if os.path.exists(ck):
         c = torch.load(ck, weights_only=False, map_location=device)
         m.load_state_dict(c["m"]); opt.load_state_dict(c["o"]); ema.shadow = c["e"]

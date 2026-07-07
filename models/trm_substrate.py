@@ -88,9 +88,16 @@ class _ImplicitAttach(torch.autograd.Function):
     def backward(ctx, g):
         p = ctx.pack
         lam, term = g, g
+        prev = term.norm()
         for _ in range(p.k - 1):
             term = torch.autograd.grad(p.fzA, p.z0, term, retain_graph=True)[0]
+            n = term.norm()
+            if n > prev:                       # divergence onset: truncate
+                if p.rec is not None:
+                    p.rec["adjoint_truncated"] = p.rec.get("adjoint_truncated", 0) + 1
+                break
             lam = lam + term
+            prev = n
         if p.rec is not None:
             # certificate C3: adjoint tail ||(J^T)^{k-1} g|| / ||g||
             # (truncation error <= tail * sigma/(1-sigma) when sigma<1)
@@ -109,12 +116,16 @@ class TRMSubstrate(nn.Module):
                  backward="neumann_k", bwd_k=6,
                  freeze_eps=0.0,   # 0 = freezing off; >0 = per-token halting
                  jac_reg=False, jac_power_iters=4,
+                 input_injection=True,   # False = prototype operator: x only
+                                         # via values; SAME Jacobian dz, but
+                                         # different fixed-point selection
                  ace_beta=(0.2, 0.8), ace_R=3.0):
         super().__init__()
         self.vm, self.backward, self.bwd_k = value_mode, backward, bwd_k
         self.n_inner, self.T_outer, self.alpha, self.tol = n_inner, T_outer, alpha, tol
         self.freeze_eps = freeze_eps
         self.jac_reg, self.jac_power_iters = jac_reg, jac_power_iters
+        self.x_inject = input_injection
         self.embed = nn.Embedding(vocab_size, d_model)
         self.ln_x, self.ln_y, self.ln_z = (nn.LayerNorm(d_model) for _ in range(3))
         use_ffn = ffn_mult if value_mode == "fixed_ffn" else 0.0
@@ -156,7 +167,7 @@ class TRMSubstrate(nn.Module):
             st = ace_static if ace_static is not None else self.ace_ctx(x, y_t)
             return self.ace_block.f(z, None, st)
         u = self.z_core.attend(self.ln_z(z), self._values(x, y_t, z))
-        z_raw = x + u
+        z_raw = (x + u) if self.x_inject else u
         if self.z_core.ffn is not None:
             z_raw = z_raw + self.z_core.ffn(self.z_core.ffn_norm(z_raw))
         return (1 - self.alpha) * z + self.alpha * z_raw
