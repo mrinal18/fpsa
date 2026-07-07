@@ -1,2 +1,2 @@
-step,loss,cell_accuracy,board_accuracy,converged_frac,mean_steps,final_residual,acc_k0.5x,acc_k2x,acc_k4x,sps
-1,2.6421,0.0648,0.0000,1.0000,15.0000,0.0005,0.0648,0.0648,0.0648,9.09
+step,loss,cell_accuracy,board_accuracy,converged_frac,mean_steps,final_residual,acc_k0.5x,acc_k2x,acc_k4x,fallback_steps,sps
+1,2.6421,0.0648,0.0000,1.0000,15.0000,0.0005,0.0648,0.0648,0.0648,0,3.41

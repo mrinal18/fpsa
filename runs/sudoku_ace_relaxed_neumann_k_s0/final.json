@@ -1,0 +1,14 @@
+{
+  "final": {
+    "cell_accuracy": 0.1041666641831398,
+    "board_accuracy": 0.0,
+    "copy_cell_baseline": 0.37037035822868347,
+    "converged_frac": 1.0,
+    "mean_steps": 15.0,
+    "final_residual": 0.0004904642701148987,
+    "acc_k0.5x": 0.1041666641831398,
+    "acc_k2x": 0.1041666641831398,
+    "acc_k4x": 0.1041666641831398
+  },
+  "steps": 31
+}

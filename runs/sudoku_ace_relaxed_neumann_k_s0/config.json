@@ -7,7 +7,7 @@
   "tol": 0.001,
   "ffn_mult": 2.0,
   "freeze_eps": 0.0,
-  "steps": 101,
+  "steps": 31,
   "batch": 64,
   "lr": 0.001,
   "wd": 0.01,
@@ -28,5 +28,5 @@
   "data_root": "data/trm_out",
   "hw": 9,
   "seed": 0,
-  "max_minutes": 3.0
+  "max_minutes": 2.5
 }

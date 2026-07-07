@@ -47,21 +47,6 @@ def get_data(task, synthetic, data_root, hw):
 
 
 @torch.no_grad()
-def k_sweep(model, task, x, y, tol, max_n=512):
-    # Test-time iteration extrapolation: cell acc at n/2, n, 2n inner iters.
-    # Equilibrium-trained models should be ~monotone (anytime property);
-    # unrolled-regime models peak at trained depth.
-    n0 = model.n_inner
-    out = {}
-    for label, n in [("k_half", max(1, n0 // 2)), ("k_train", n0), ("k_2x", 2 * n0)]:
-        model.n_inner = n
-        lg, _ = model(x[:max_n])
-        out[label] = (lg[-1].argmax(-1) == y[:max_n]).float().mean().item()
-    model.n_inner = n0
-    return out
-
-
-@torch.no_grad()
 def evaluate(model, task, x, y, tol, batch=256, max_n=1024):
     model.eval()
     x, y = x[:max_n], y[:max_n]
@@ -130,7 +115,7 @@ def main():
               else ["cell_accuracy", "solved_accuracy", "path_precision",
                     "path_recall", "path_f1", "copy_cell_baseline"]) + \
              ["converged_frac", "mean_steps", "final_residual",
-              "acc_k0.5x", "acc_k2x", "acc_k4x", "sps"]
+              "acc_k0.5x", "acc_k2x", "acc_k4x", "fallback_steps", "sps"]
     if os.path.exists(ck):
         c = torch.load(ck, weights_only=False, map_location=device)
         m.load_state_dict(c["m"]); opt.load_state_dict(c["o"]); ema.shadow = c["e"]
