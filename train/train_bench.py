@@ -47,6 +47,21 @@ def get_data(task, synthetic, data_root, hw):
 
 
 @torch.no_grad()
+def k_sweep(model, task, x, y, tol, max_n=512):
+    # Test-time iteration extrapolation: cell acc at n/2, n, 2n inner iters.
+    # Equilibrium-trained models should be ~monotone (anytime property);
+    # unrolled-regime models peak at trained depth.
+    n0 = model.n_inner
+    out = {}
+    for label, n in [("k_half", max(1, n0 // 2)), ("k_train", n0), ("k_2x", 2 * n0)]:
+        model.n_inner = n
+        lg, _ = model(x[:max_n])
+        out[label] = (lg[-1].argmax(-1) == y[:max_n]).float().mean().item()
+    model.n_inner = n0
+    return out
+
+
+@torch.no_grad()
 def evaluate(model, task, x, y, tol, batch=256, max_n=1024):
     model.eval()
     x, y = x[:max_n], y[:max_n]
@@ -107,7 +122,7 @@ def main():
                      freeze_eps=cfg.get("freeze_eps", 0.0),
                      jac_reg=cfg.get("jac_reg_weight", 0.0) > 0,
                      jac_power_iters=cfg.get("jac_power_iters", 4),
-                     input_injection=cfg.get("input_injection", True)).to(device)
+                     inject_x=cfg.get("inject_x", True)).to(device)
     opt = torch.optim.AdamW(m.parameters(), lr=cfg["lr"], weight_decay=cfg["wd"])
     ema = EMA(m, cfg.get("ema_decay", 0.999))
     g = torch.Generator().manual_seed(a.seed); start = 0
@@ -137,9 +152,14 @@ def main():
     if a.task == "maze" and cfg.get("path_weight", 1.0) != 1.0:
         cw = torch.ones(vocab, device=device); cw[5] = cfg["path_weight"]
     m.train(); t0 = time.time(); step = start
+    fallback_steps, fb_next = 0, False
+    auto_fb = cfg.get("auto_fallback", True) and a.backward == "neumann_k"
     for step in range(start + 1, cfg["steps"] + 1):
         idx = torch.randint(0, len(xtr), (cfg["batch"],), generator=g)
         xb, yb = xtr[idx].to(device), ytr[idx].to(device)
+        if auto_fb:
+            m.backward = "bptt_k" if fb_next else "neumann_k"
+            fallback_steps += int(fb_next)
         logits, rec = m(xb)
         ce = sum(F.cross_entropy(l.view(-1, vocab), yb.view(-1), ignore_index=0,
                                  weight=cw) for l in logits) / len(logits)
@@ -155,6 +175,9 @@ def main():
                 loss = ce + pen
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step(); ema.update(m)
+        if auto_fb:
+            tails = rec.get("adjoint_tail") or [0.0]
+            fb_next = (max(tails) > 1.0) or ((sig == sig) and sig > 1.0)
         rec["sigma_hats"] = rec["exit_res"] = None   # break graph refs (leak hygiene)
         del logits
         if step % 50 == 0: gc.collect()
@@ -165,6 +188,7 @@ def main():
             del em
             sps = (time.time() - t0) / max(step - start, 1)
             log.log(step=step, loss=f"{loss.item():.4f}", sps=f"{sps:.2f}",
+                    fallback_steps=fallback_steps,
                     **{k: (f"{v:.4f}" if isinstance(v, float) else v) for k, v in mt.items()})
             key = "board_accuracy" if a.task == "sudoku" else "path_f1"
             print(f"step {step:5d} loss {loss.item():.4f} cell {mt['cell_accuracy']:.4f} "
