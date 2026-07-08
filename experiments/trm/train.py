@@ -49,6 +49,7 @@ DEFAULTS = dict(
     arch="itrm",                    # trm | itrm
     run_name=None,
     results_dir="results",
+    resume=None,                    # checkpoint path, or "auto" = <results_dir>/<run>/last.pt
     seed=0,
     # training
     epochs=50000,
@@ -109,6 +110,7 @@ DEFAULTS = dict(
 # Types for options whose DEFAULTS value is None (argparse can't infer them).
 _NONE_DEFAULT_TYPES = {
     "run_name": str,
+    "resume": str,
     "micro_batch_size": int,
     "grad_clip": float,
     "forward_dtype": str,
@@ -231,10 +233,18 @@ class EMAHelper:
         """Checkpointable state; debiased weights recoverable on load."""
         return {
             "shadow": self.shadow,
+            "init": self.init,
             "debiased": {k: self._debiased(k) for k in self.shadow},
             "n_updates": self.n_updates,
             "mu": self.mu,
         }
+
+    def load_state(self, state: dict) -> None:
+        self.shadow = {k: v.clone() for k, v in state["shadow"].items()}
+        if "init" in state:
+            self.init = {k: v.clone() for k, v in state["init"].items()}
+        self.n_updates = state.get("n_updates", 0)
+        self.mu = state.get("mu", self.mu)
 
 
 # --------------------------------------------------------------------------
@@ -392,10 +402,31 @@ def main():
     batchers = [TrainBatcher(train_data, micro_bs, seed=cfg["seed"] + i) for i in range(n_micro)]
     carries = [None] * n_micro
 
+    # Resume from a checkpoint (Colab/preemptible-friendly). Restores model,
+    # EMA (shadow + init + count, so debiasing stays exact), optimizer, and
+    # the step counter; the data sampler restarts fresh (it samples groups
+    # i.i.d. per epoch, so this does not bias training).
     best_exact = 0.0
+    start_step = 0
+    resume_path = cfg["resume"]
+    if resume_path == "auto":
+        resume_path = os.path.join(results_dir, "last.pt")
+    if resume_path and os.path.exists(resume_path):
+        ck = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model"])
+        if ema is not None and ck.get("ema"):
+            ema.load_state(ck["ema"])
+        if "optimizer" in ck:
+            opt.load_state_dict(ck["optimizer"])
+        start_step = ck.get("step", 0)
+        best_exact = ck.get("best_exact", 0.0)
+        print(f"resumed from {resume_path} at step {start_step} (best_exact={best_exact:.4f})")
+    elif cfg["resume"] == "auto":
+        print("resume=auto: no existing checkpoint, starting fresh")
+
     t0 = time.time()
     running = {}
-    for step in range(1, total_steps + 1):
+    for step in range(start_step + 1, total_steps + 1):
         loss_head.train()
         lr_now = None
         for g, base_lr in zip(opt.param_groups, base_lrs):
@@ -469,7 +500,9 @@ def main():
                 }
                 torch.save(ckpt, os.path.join(results_dir, "best.pt"))
             torch.save({"config": cfg, "model": model.state_dict(),
-                        "ema": ema.state() if ema is not None else None, "step": step},
+                        "ema": ema.state() if ema is not None else None,
+                        "optimizer": opt.state_dict(), "best_exact": best_exact,
+                        "step": step},
                        os.path.join(results_dir, "last.pt"))
 
     print(f"done. best eval/exact_accuracy={best_exact:.4f}")
