@@ -161,7 +161,21 @@ def parse_config() -> dict:
 # --------------------------------------------------------------------------
 
 class EMAHelper:
-    """EMA over trainable parameters only.
+    """Initialization-debiased EMA over trainable parameters only.
+
+    The raw shadow after N updates is  s_N = mu^N theta_0 + (1-mu) sum_t
+    mu^(N-t) theta_t — contaminated by the random init theta_0 with weight
+    mu^N. With mu=0.999 that weight is still 0.79 after 240 steps, so an
+    early eval sees a mostly-random model (chance-level accuracy) even though
+    the live weights have learned. swap_in therefore evaluates the debiased
+    average of only the VISITED weights (same trick as Adam's bias
+    correction):
+
+        theta_hat = (s_N - mu^N theta_0) / (1 - mu^N)
+
+    which converges to the plain EMA as N grows, so the long-run reference
+    protocol (first eval at ~6.5k steps, mu^N ~ 1e-3) is unchanged while
+    pilots and smoke runs report meaningful numbers from the first eval.
 
     Buffers are deliberately excluded: spectral-norm parametrizations keep
     power-iteration vectors (_u/_v) as buffers, and EMA-averaging those unit
@@ -175,11 +189,13 @@ class EMAHelper:
 
     def __init__(self, model: torch.nn.Module, mu: float):
         self.mu = mu
+        self.n_updates = 0
         self.shadow = {
             k: p.detach().clone().float()
             for k, p in model.named_parameters()
             if p.requires_grad
         }
+        self.init = {k: v.clone() for k, v in self.shadow.items()}
         self._backup = None
 
     @torch.no_grad()
@@ -187,6 +203,13 @@ class EMAHelper:
         for k, p in model.named_parameters():
             if k in self.shadow:
                 self.shadow[k].mul_(self.mu).add_(p.detach().float(), alpha=1 - self.mu)
+        self.n_updates += 1
+
+    def _debiased(self, k: str) -> torch.Tensor:
+        decay_n = self.mu ** self.n_updates
+        if self.n_updates == 0 or decay_n < 1e-4:
+            return self.shadow[k]
+        return (self.shadow[k] - decay_n * self.init[k]) / (1.0 - decay_n)
 
     @torch.no_grad()
     def swap_in(self, model: torch.nn.Module):
@@ -195,7 +218,7 @@ class EMAHelper:
         for k, p in model.named_parameters():
             if k in self.shadow:
                 self._backup[k] = p.detach().clone()
-                p.copy_(self.shadow[k].to(p.dtype))
+                p.copy_(self._debiased(k).to(p.dtype))
 
     @torch.no_grad()
     def swap_out(self, model: torch.nn.Module):
@@ -203,6 +226,15 @@ class EMAHelper:
             if k in self._backup:
                 p.copy_(self._backup[k])
         self._backup = None
+
+    def state(self) -> dict:
+        """Checkpointable state; debiased weights recoverable on load."""
+        return {
+            "shadow": self.shadow,
+            "debiased": {k: self._debiased(k) for k in self.shadow},
+            "n_updates": self.n_updates,
+            "mu": self.mu,
+        }
 
 
 # --------------------------------------------------------------------------
@@ -417,6 +449,10 @@ def main():
             metrics = evaluate(loss_head, test_data, micro_bs, device)
             if ema is not None:
                 ema.swap_out(model)
+                # Live-weights eval alongside the EMA eval: separates "model
+                # hasn't learned" from "EMA is lagging the model" at a glance.
+                live = evaluate(loss_head, test_data, micro_bs, device)
+                metrics.update({k.replace("eval/", "eval_live/"): v for k, v in live.items()})
             metrics["step"] = step
             print(json.dumps({k: (round(v, 5) if isinstance(v, float) else v) for k, v in metrics.items()}))
             with open(log_path, "a") as f:
@@ -427,13 +463,13 @@ def main():
                 ckpt = {
                     "config": cfg,
                     "model": model.state_dict(),
-                    "ema": ema.shadow if ema is not None else None,
+                    "ema": ema.state() if ema is not None else None,
                     "step": step,
                     "eval": metrics,
                 }
                 torch.save(ckpt, os.path.join(results_dir, "best.pt"))
             torch.save({"config": cfg, "model": model.state_dict(),
-                        "ema": ema.shadow if ema is not None else None, "step": step},
+                        "ema": ema.state() if ema is not None else None, "step": step},
                        os.path.join(results_dir, "last.pt"))
 
     print(f"done. best eval/exact_accuracy={best_exact:.4f}")
