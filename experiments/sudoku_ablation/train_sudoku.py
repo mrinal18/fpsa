@@ -239,6 +239,8 @@ def train_variant(variant, args, device):
         dropout=args.dropout,
         use_spectral_norm=args.spectral_norm,
         max_grid_size=9,
+        grad_mode=args.grad_mode,
+        adjoint_steps=args.adjoint_steps,
     ).to(device)
 
     n_params = model.num_parameters()
@@ -350,6 +352,13 @@ def main():
     parser.add_argument("--spectral_norm", action="store_true", default=True)
     parser.add_argument("--no_spectral_norm", dest="spectral_norm",
                         action="store_false")
+    parser.add_argument("--grad_mode", default="unroll",
+                        choices=["unroll", "phantom", "neumann"],
+                        help="Backward through the FPI loop: full unrolled "
+                             "autograd, 1-step phantom gradient, or Neumann-"
+                             "refined implicit gradient (O(1) memory)")
+    parser.add_argument("--adjoint_steps", type=int, default=10,
+                        help="Neumann terms for the adjoint solve (neumann mode)")
 
     # Training
     parser.add_argument("--epochs", type=int, default=50)

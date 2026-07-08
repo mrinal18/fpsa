@@ -161,14 +161,16 @@ class FPSAAttention(nn.Module):
     # that gets added to the residual stream.
     def _f(self, z: torch.Tensor, x: torch.Tensor,
            attn_mask: Optional[torch.Tensor]) -> torch.Tensor:
-        """One iteration of f(z; x) = x + AttentionBlock(z, x).
+        """One iteration of the FPSA update (paper Eq. 3-4).
 
-        The in-loop residual 'x +' prevents rank collapse: without it, pure
-        iterated attention converges to a state where all tokens are the
-        same vector, which zeroes the gradient to W_Q, W_K. With it, token
-        identity is preserved through the loop and the fixed point is
+        f(z; x) = W_O(Attn(z) V(x)), optionally damped:
+            z_{k+1} = (1 - alpha) z_k + alpha f(z_k; x).
 
-            z* = x + AttentionBlock(z*, x)
+        V is computed from x once per call and held fixed conceptually (it
+        does not depend on z), which prevents the rank collapse that pure
+        iterated attention would suffer. The residual connection is applied
+        by the caller AFTER convergence (Y = x + Dropout(z*), Eq. 5); there
+        is no in-loop residual.
         """
         q = self._split_heads(self.W_Q(z))                   # (B, H, N, dh)
         k = self._split_heads(self.W_K(z))                   # (B, H, N, dh)
