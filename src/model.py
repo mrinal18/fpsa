@@ -5,7 +5,7 @@ import math
 from typing import Optional, Tuple, Dict, Any
 from torch.nn.utils.parametrizations import spectral_norm as sn_param
 from .config import BertConfig
-from .adjoint import _AdjointRefine
+from .implicit import attach_implicit_grad
 
 class VanillaAttention(nn.Module):
     def __init__(
@@ -127,15 +127,13 @@ class FPSAAttention(nn.Module):
             self.W_O = _maybe_spectral_norm(self.W_O)
 
         self.dropout = nn.Dropout(dropout)
-        self.attn_dropout_p = attn_dropout  # used for variational dropout inside the loop
+        # Variational attention-probs dropout: one mask per forward call, held
+        # constant across ALL inner iterations (torchdeq convention) so f is
+        # deterministic during the loop and a true fixed point exists. The
+        # mask is threaded through _f explicitly — see forward().
+        self.attn_dropout_p = attn_dropout
 
-        # Variational attention-probs dropout mask — sampled ONCE per forward,
-        # held constant across ALL inner iterations. This provides the same
-        # regularization as vanilla BERT's attention dropout while preserving
-        # the fixed-point property (f stays deterministic during the loop).
-        # See torchdeq's VariationalDropout convention: same mask across iters.
-        self._attn_drop_mask: Optional[torch.Tensor] = None
-        
+
         self.use_rope = use_rope
         if use_rope:
             self.rope = RoPE(self.head_dim, max_seq_len)
@@ -154,13 +152,14 @@ class FPSAAttention(nn.Module):
         return x.transpose(1, 2).contiguous().view(B, N, H * dh)
 
     # -------- the core map f(z; x) --------
-    # The fixed point equation is z* = x + AttentionBlock(z*, x).
-    # Inside _f we iterate on z (the full state with residual). The *output*
-    # of forward() is the attention update (z* - x), so the caller can use
-    # FPSA as a drop-in replacement for standard MHA: it returns the delta
-    # that gets added to the residual stream.
+    # The fixed-point equation is z* = f(z*; x) with f the (damped) attention
+    # update below — no in-loop residual. forward() returns the converged
+    # attention update z*, and the caller adds it to the residual stream
+    # (paper Eq. 5: Y = x + Dropout(z*)), so FPSA is a drop-in replacement
+    # for standard MHA.
     def _f(self, z: torch.Tensor, x: torch.Tensor,
-           attn_mask: Optional[torch.Tensor]) -> torch.Tensor:
+           attn_mask: Optional[torch.Tensor],
+           attn_drop_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """One iteration of the FPSA update (paper Eq. 3-4).
 
         f(z; x) = W_O(Attn(z) V(x)), optionally damped:
@@ -188,10 +187,12 @@ class FPSAAttention(nn.Module):
 
         attn = F.softmax(scores, dim=-1)
 
-        # Variational attention-probs dropout: use the same mask every iteration.
-        # self._attn_drop_mask is set by forward() once per forward call.
-        if self.training and self._attn_drop_mask is not None:
-            attn = attn * self._attn_drop_mask
+        # Variational attention-probs dropout: the same mask every iteration,
+        # passed EXPLICITLY so the closure used by the implicit backward sees
+        # the identical map at backward time (a module attribute would already
+        # be cleared when the adjoint re-invokes f during loss.backward()).
+        if self.training and attn_drop_mask is not None:
+            attn = attn * attn_drop_mask
 
         out = torch.matmul(attn, v)
         out = self._merge_heads(out)
@@ -210,7 +211,8 @@ class FPSAAttention(nn.Module):
         return num / den
 
     def _run_loop(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor],
-                  record_grad: bool) -> torch.Tensor:
+                  record_grad: bool,
+                  attn_drop_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Run the fixed-point loop. If record_grad=False, runs under no_grad."""
         B, N, _ = x.shape
         ctx = torch.enable_grad() if record_grad else torch.no_grad()
@@ -223,7 +225,7 @@ class FPSAAttention(nn.Module):
         final_iter = 0
         with ctx:
             for k in range(self.max_iter):
-                z_next = self._f(z, x, attn_mask)
+                z_next = self._f(z, x, attn_mask, attn_drop_mask)
                 rel = self._rel_residual(z_next, z)
                 if converged is not None:
                     km = converged.to(z.dtype).unsqueeze(-1)        # (B, N, 1)
@@ -240,7 +242,7 @@ class FPSAAttention(nn.Module):
         self._last_converged_frac = (
             converged.float().mean().item() if converged is not None else 1.0
         )
-        return z
+        return z, converged
 
     # -------- forward --------
     def forward(self, x: torch.Tensor,
@@ -268,73 +270,72 @@ class FPSAAttention(nn.Module):
         """
         B, N, _ = x.shape
 
-        # Sample variational attention-dropout mask (same mask for all iterations)
+        # Sample variational attention-dropout mask (same mask for all
+        # iterations). Passed explicitly through _f so the implicit-gradient
+        # closure sees the identical map when the adjoint re-invokes it at
+        # backward time.
+        drop_mask = None
         if self.training and self.attn_dropout_p > 0:
             keep_p = 1.0 - self.attn_dropout_p
-            self._attn_drop_mask = (
+            drop_mask = (
                 torch.empty(B, self.num_heads, N, N, device=x.device, dtype=x.dtype)
                 .bernoulli_(keep_p) / keep_p
             )
+
+        # ---- Step 1: one vanilla-like attention step (always with autograd) ----
+        z_one = self._f(x, x, attn_mask, drop_mask)
+
+        # ---- Step 2: per-token routing decision ----
+        with torch.no_grad():
+            change = self._rel_residual(z_one, x)       # (B, N)
+            needs_fpi = change >= self.skip_tol          # (B, N) bool
+
+        n_hard = needs_fpi.sum().item()
+        n_total = B * N
+        frac_hard = n_hard / n_total
+
+        # Track stats
+        self._last_fpi_frac = frac_hard
+
+        if n_hard == 0:
+            # All tokens converged in 1 step — pure vanilla behavior
+            self._last_iterations = 1
+            self._last_converged_frac = 1.0
+            return self.dropout(z_one)
+
+        # ---- Step 3: run FPI for hard tokens ----
+        use_implicit = self.implicit_grad and self.training and x.requires_grad
+
+        if not use_implicit:
+            # Eval or no-grad: just run the loop, full autograd or no grad
+            z_star, _ = self._run_loop(
+                x, attn_mask,
+                record_grad=x.requires_grad and self.training,
+                attn_drop_mask=drop_mask,
+            )
         else:
-            self._attn_drop_mask = None
-
-        try:
-            # ---- Step 1: one vanilla-like attention step (always with autograd) ----
-            z_one = self._f(x, x, attn_mask)
-
-            # ---- Step 2: per-token routing decision ----
+            # Training: implicit-gradient path for FPI tokens. Masked implicit
+            # differentiation (paper Appx. D): tokens that did not converge
+            # are excluded from the adjoint solve.
             with torch.no_grad():
-                change = self._rel_residual(z_one, x)       # (B, N)
-                needs_fpi = change >= self.skip_tol          # (B, N) bool
-
-            n_hard = needs_fpi.sum().item()
-            n_total = B * N
-            frac_hard = n_hard / n_total
-
-            # Track stats
-            self._last_fpi_frac = frac_hard
-
-            if n_hard == 0:
-                # All tokens converged in 1 step — pure vanilla behavior
-                self._last_iterations = 1
-                self._last_converged_frac = 1.0
-                delta = z_one
-                return self.dropout(delta)
-
-            # ---- Step 3: run FPI for hard tokens ----
-            use_implicit = self.implicit_grad and self.training and x.requires_grad
-
-            if not use_implicit:
-                # Eval or no-grad: just run the loop, full autograd or no grad
-                z_star = self._run_loop(
-                    x, attn_mask,
-                    record_grad=x.requires_grad and self.training,
+                z_star_detached, converged = self._run_loop(
+                    x, attn_mask, record_grad=False, attn_drop_mask=drop_mask
                 )
-            else:
-                # Training: phantom-gradient path for FPI tokens
-                with torch.no_grad():
-                    z_star_detached = self._run_loop(
-                        x, attn_mask, record_grad=False
-                    ).detach()
-                # One differentiable f application at z* for the backward graph
-                z_star = self._f(z_star_detached, x, attn_mask)
-                if self.adjoint_steps > 0:
-                    z_star = _AdjointRefine.apply(
-                        z_star, z_star_detached, x, attn_mask,
-                        self, self.adjoint_steps, self.tol,
-                    )
+            z_star = attach_implicit_grad(
+                z_star_detached.detach(),
+                lambda z: self._f(z, x, attn_mask, drop_mask),
+                adjoint_steps=self.adjoint_steps,
+                adjoint_tol=self.tol,
+                conv_mask=converged,
+            )
 
-            # ---- Step 4: blend easy (exact grad) and hard (implicit grad) ----
-            mask = needs_fpi.unsqueeze(-1).float()           # (B, N, 1)
-            z_final = (1.0 - mask) * z_one + mask * z_star
-            # For easy tokens: gradient flows through z_one → single f application → exact
-            # For hard tokens: gradient flows through z_star → implicit diff → approximate
+        # ---- Step 4: blend easy (exact grad) and hard (implicit grad) ----
+        mask = needs_fpi.unsqueeze(-1).float()           # (B, N, 1)
+        z_final = (1.0 - mask) * z_one + mask * z_star
+        # For easy tokens: gradient flows through z_one → single f application → exact
+        # For hard tokens: gradient flows through z_star → implicit diff → approximate
 
-            delta = z_final
-            return self.dropout(delta)
-
-        finally:
-            self._attn_drop_mask = None
+        return self.dropout(z_final)
 
 class RoPE(nn.Module):
     """Rotary Position Embedding (RoPE) for iterating attention architectures."""

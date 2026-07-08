@@ -166,6 +166,8 @@ class SpatialFPSAAttention(nn.Module):
         self.value_mode = value_mode
         self.epsilon = epsilon
         self.k_max = k_max
+        if grad_mode not in ("unroll", "phantom", "neumann"):
+            raise ValueError(f"Unknown grad_mode: {grad_mode!r}")
         self.grad_mode = grad_mode
         self.adjoint_steps = adjoint_steps
         self.adjoint_tol = adjoint_tol
@@ -176,8 +178,13 @@ class SpatialFPSAAttention(nn.Module):
         # stochastic, so no fixed point exists during training; a fixed mask
         # keeps the regularization while f stays deterministic within the loop
         # (torchdeq's VariationalDropout convention, also used by FPSA-BERT).
+        # NOTE: this changes regularization semantics vs the original per-step
+        # nn.Dropout for ALL grad modes, including the "unroll" baseline —
+        # re-run baselines before comparing against pre-change numbers.
+        # The mask is passed explicitly through _one_step (never stored on the
+        # module) so the implicit-gradient closure sees the identical map when
+        # the adjoint re-invokes it at backward time.
         self.dropout_p = dropout
-        self._attn_drop_mask: Optional[torch.Tensor] = None
 
         # Per-head learnable damping α ∈ (0, 1)
         self._alpha_logit = nn.Parameter(torch.zeros(num_heads))
@@ -253,6 +260,7 @@ class SpatialFPSAAttention(nn.Module):
         v: Optional[torch.Tensor],
         row_ids: torch.Tensor,
         col_ids: torch.Tensor,
+        attn_drop_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Single FPI iteration.
 
@@ -261,6 +269,8 @@ class SpatialFPSAAttention(nn.Module):
             x: original input [B, N, D]
             v: precomputed values [B, H, N, d_h] (only for fixed/fixed_ffn modes)
             row_ids, col_ids: [B, N]
+            attn_drop_mask: optional [B, H, N, N] variational dropout mask,
+                held fixed across all iterations of one forward pass
 
         Returns:
             z_new: updated state [B, N, D]
@@ -286,8 +296,8 @@ class SpatialFPSAAttention(nn.Module):
         # Bidirectional attention (no causal mask)
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B, H, N, N]
         attn_weights = torch.softmax(scores, dim=-1)
-        if self.training and self._attn_drop_mask is not None:
-            attn_weights = attn_weights * self._attn_drop_mask
+        if self.training and attn_drop_mask is not None:
+            attn_weights = attn_weights * attn_drop_mask
 
         # Context
         context = torch.matmul(attn_weights, v_step)  # [B, H, N, d_h]
@@ -326,76 +336,73 @@ class SpatialFPSAAttention(nn.Module):
         """
         B, N, D = x.shape
 
-        # Variational attention dropout mask: one sample per forward call.
+        # Variational attention dropout mask: one sample per forward call,
+        # passed explicitly so the backward-time adjoint sees the same map.
+        drop_mask = None
         if self.training and self.dropout_p > 0:
             keep_p = 1.0 - self.dropout_p
-            self._attn_drop_mask = (
+            drop_mask = (
                 torch.empty(B, self.num_heads, N, N, device=x.device, dtype=x.dtype)
                 .bernoulli_(keep_p) / keep_p
             )
-        else:
-            self._attn_drop_mask = None
 
-        try:
-            use_implicit = (
-                self.grad_mode in ("phantom", "neumann")
-                and self.training
-                and torch.is_grad_enabled()
+        use_implicit = (
+            self.grad_mode in ("phantom", "neumann")
+            and self.training
+            and torch.is_grad_enabled()
+        )
+
+        if not use_implicit:
+            # Unrolled path (original behavior): autograd through the loop
+            # during training, plain iteration otherwise.
+            z, steps_taken, residual_norms, token_residual = self._run_loop(
+                x, row_ids, col_ids, drop_mask
+            )
+        else:
+            # Implicit path: solve under no_grad, then attach the backward
+            # graph via one differentiable step (+ Neumann adjoint refine).
+            # Note the returned tensor is f(z*), one map application beyond
+            # the early-stopped loop state — the standard DEQ convention; at
+            # convergence the difference is below epsilon.
+            with torch.no_grad():
+                z_star, steps_taken, residual_norms, token_residual = self._run_loop(
+                    x, row_ids, col_ids, drop_mask
+                )
+            z_star = z_star.detach()
+
+            if self.value_mode in ("fixed", "fixed_ffn"):
+                v_grad = self._get_values(x, x)
+            else:
+                v_grad = None
+
+            def f(z_):
+                return self._one_step(z_, x, v_grad, row_ids, col_ids, drop_mask)
+
+            # Masked implicit differentiation (paper Appx. D): non-converged
+            # tokens are excluded from the adjoint solve. attach_implicit_grad
+            # drops the mask itself when convergence is still rare.
+            conv_mask = (token_residual < self.epsilon) if self.mask_nonconverged else None
+
+            adjoint_steps = 0 if self.grad_mode == "phantom" else self.adjoint_steps
+            z = attach_implicit_grad(
+                z_star, f,
+                adjoint_steps=adjoint_steps,
+                adjoint_tol=self.adjoint_tol,
+                conv_mask=conv_mask,
             )
 
-            if not use_implicit:
-                # Unrolled path (original behavior): autograd through the loop
-                # during training, plain iteration otherwise.
-                z, steps_taken, residual_norms, token_residual = self._run_loop(
-                    x, row_ids, col_ids
-                )
-            else:
-                # Implicit path: solve under no_grad, then attach the backward
-                # graph via one differentiable step (+ Neumann adjoint refine).
-                with torch.no_grad():
-                    z_star, steps_taken, residual_norms, token_residual = self._run_loop(
-                        x, row_ids, col_ids
-                    )
-                z_star = z_star.detach()
+        info = {
+            "steps": steps_taken,
+            "residual_norms": residual_norms,
+            "converged_frac": (token_residual < self.epsilon).float().mean().item(),
+            "grad_mode": self.grad_mode if use_implicit else "unroll",
+        }
+        if not self.training:
+            # Loop-invariant diagnostic; skip the CPU transfer in the hot path.
+            info["alpha"] = self.alpha.detach().cpu().tolist()
+        return z, info
 
-                if self.value_mode in ("fixed", "fixed_ffn"):
-                    v_grad = self._get_values(x, x)
-                else:
-                    v_grad = None
-
-                def f(z_):
-                    return self._one_step(z_, x, v_grad, row_ids, col_ids)
-
-                # Masked implicit differentiation (paper Appx. D): exclude
-                # tokens that did not converge from the adjoint solve. Skip
-                # the mask when convergence is still rare (early training) to
-                # avoid gradient starvation.
-                conv_mask = None
-                if self.mask_nonconverged:
-                    converged = token_residual < self.epsilon        # [B, N]
-                    if converged.float().mean() >= 0.1:
-                        conv_mask = converged
-
-                adjoint_steps = 0 if self.grad_mode == "phantom" else self.adjoint_steps
-                z = attach_implicit_grad(
-                    z_star, f,
-                    adjoint_steps=adjoint_steps,
-                    adjoint_tol=self.adjoint_tol,
-                    conv_mask=conv_mask,
-                )
-
-            info = {
-                "steps": steps_taken,
-                "residual_norms": residual_norms,
-                "alpha": self.alpha.detach().cpu().tolist(),
-                "converged_frac": (token_residual < self.epsilon).float().mean().item(),
-                "grad_mode": self.grad_mode if use_implicit else "unroll",
-            }
-            return z, info
-        finally:
-            self._attn_drop_mask = None
-
-    def _run_loop(self, x, row_ids, col_ids):
+    def _run_loop(self, x, row_ids, col_ids, drop_mask=None):
         """Fixed-point iteration with early stopping.
 
         Returns (z, steps_taken, residual_norms, token_residual) where
@@ -413,12 +420,13 @@ class SpatialFPSAAttention(nn.Module):
         token_residual = torch.full(x.shape[:2], float("inf"), device=x.device)
 
         for k in range(self.k_max):
-            z_new = self._one_step(z, x, v, row_ids, col_ids)
+            z_new = self._one_step(z, x, v, row_ids, col_ids, drop_mask)
 
-            # Convergence check
+            # Convergence check (>= fp32: bf16 floors relative residuals ~2^-9)
             with torch.no_grad():
-                diff = (z_new - z).norm(dim=-1)       # [B, N]
-                baseline = z.norm(dim=-1).clamp(min=1e-8)
+                res_dtype = torch.promote_types(z.dtype, torch.float32)
+                diff = (z_new - z).to(res_dtype).norm(dim=-1)     # [B, N]
+                baseline = z.to(res_dtype).norm(dim=-1).clamp(min=1e-8)
                 token_residual = diff / baseline
                 rel_change = token_residual.mean()
                 residual_norms.append(rel_change.item())
@@ -458,6 +466,8 @@ class SpatialFPSALayer(nn.Module):
         max_grid_size: int = 32,
         grad_mode: str = "unroll",
         adjoint_steps: int = 10,
+        adjoint_tol: float = 1e-4,
+        mask_nonconverged: bool = True,
     ):
         super().__init__()
         self.norm_attn = nn.LayerNorm(d_model)
@@ -474,6 +484,8 @@ class SpatialFPSALayer(nn.Module):
             max_grid_size=max_grid_size,
             grad_mode=grad_mode,
             adjoint_steps=adjoint_steps,
+            adjoint_tol=adjoint_tol,
+            mask_nonconverged=mask_nonconverged,
         )
         self.norm_ffn = nn.LayerNorm(d_model)
         ffn_dim = int(d_model * ffn_mult)
@@ -523,6 +535,8 @@ class SpatialFPSAModel(nn.Module):
         max_grid_size: int = 32,
         grad_mode: str = "unroll",
         adjoint_steps: int = 10,
+        adjoint_tol: float = 1e-4,
+        mask_nonconverged: bool = True,
     ):
         super().__init__()
         self.value_mode = value_mode
@@ -546,6 +560,8 @@ class SpatialFPSAModel(nn.Module):
                 max_grid_size=max_grid_size,
                 grad_mode=grad_mode,
                 adjoint_steps=adjoint_steps,
+                adjoint_tol=adjoint_tol,
+                mask_nonconverged=mask_nonconverged,
             )
             for _ in range(num_layers)
         ])

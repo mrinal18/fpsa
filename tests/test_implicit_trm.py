@@ -20,9 +20,12 @@ from models.trm import TRMConfig, build_trm
 from models.implicit_trm import ImplicitTRMInner, build_implicit_trm
 
 
+BATCH = 2
+
+
 def _tiny_config(**overrides) -> TRMConfig:
     base = dict(
-        batch_size=2, seq_len=16, vocab_size=11,
+        seq_len=16, vocab_size=11,
         H_cycles=2, L_cycles=3, L_layers=1,
         hidden_size=32, expansion=2.0, num_heads=4,
         pos_encodings="rope", puzzle_emb_len=2,
@@ -38,8 +41,8 @@ def _tiny_config(**overrides) -> TRMConfig:
 def _tiny_batch(config, seed=0):
     torch.manual_seed(seed)
     return {
-        "inputs": torch.randint(1, config.vocab_size, (config.batch_size, config.seq_len)),
-        "labels": torch.randint(1, config.vocab_size, (config.batch_size, config.seq_len)),
+        "inputs": torch.randint(1, config.vocab_size, (BATCH, config.seq_len)),
+        "labels": torch.randint(1, config.vocab_size, (BATCH, config.seq_len)),
     }
 
 
@@ -52,7 +55,7 @@ def _setup_latent_map(seed=0, damping=0.8):
 
     batch = _tiny_batch(config, seed + 1)
     seq_info = inner._seq_info()
-    B = config.batch_size
+    B = BATCH
     N = config.seq_len + config.puzzle_emb_len
     y = inner.y_init.expand(B, N, -1).clone().double()
 
@@ -141,9 +144,9 @@ def _run_training_steps(arch, n_steps=25, seed=0, **config_overrides):
     for _ in range(n_steps):
         opt.zero_grad()
         carry, loss, metrics, _, _ = loss_head(carry=carry, batch=batch)
-        (loss / config.batch_size).backward()
+        (loss / BATCH).backward()
         opt.step()
-        losses.append(loss.item() / config.batch_size)
+        losses.append(loss.item() / BATCH)
     return losses, model
 
 
@@ -209,7 +212,7 @@ class TestTraining:
                               jacobian_reg_lambda=0.1, n_jacobian_samples=1)
         model = build_implicit_trm(config)
         from losses import ACTLossHead
-        loss_head = ACTLossHead(model, jacobian_reg_lambda=0.1)
+        loss_head = ACTLossHead(model)
         loss_head.train()
         batch = _tiny_batch(config)
         carry = model.initial_carry(batch)

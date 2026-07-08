@@ -49,12 +49,11 @@ LOSS_FNS = {
 
 class ACTLossHead(nn.Module):
     def __init__(self, model: nn.Module, loss_type: str = "stablemax_cross_entropy",
-                 q_loss_coeff: float = 0.5, jacobian_reg_lambda: float = 0.0):
+                 q_loss_coeff: float = 0.5):
         super().__init__()
         self.model = model
         self.loss_fn = LOSS_FNS[loss_type]
         self.q_loss_coeff = q_loss_coeff
-        self.jacobian_reg_lambda = jacobian_reg_lambda
 
     def initial_carry(self, *args, **kwargs):
         return self.model.initial_carry(*args, **kwargs)
@@ -85,10 +84,11 @@ class ACTLossHead(nn.Module):
                 "steps": torch.where(valid_metrics, new_carry.steps, 0).sum(),
             }
             # Batch-level scalars (not count-normalized): averaged per
-            # optimizer step by the training loop.
-            for k in ("stat_inner_iters", "stat_converged_frac"):
-                if k in outputs and not torch.isnan(outputs[k]).any():
-                    metrics[k] = outputs[k].detach()
+            # optimizer step by the training loop. Models emit only the stats
+            # they actually have, so no sentinel filtering is needed.
+            for k, v in outputs.items():
+                if k.startswith("stat_") and k != "stat_jacobian_loss":
+                    metrics[k] = v.detach()
 
         lm_loss = (self.loss_fn(outputs["logits"], labels) / loss_divisor).sum()
         q_halt_loss = F.binary_cross_entropy_with_logits(
@@ -97,8 +97,10 @@ class ACTLossHead(nn.Module):
         )
         loss = lm_loss + self.q_loss_coeff * q_halt_loss
 
-        if self.jacobian_reg_lambda > 0 and "stat_jacobian_loss" in outputs:
-            loss = loss + self.jacobian_reg_lambda * outputs["stat_jacobian_loss"] * labels.shape[0]
+        # Pre-weighted by the model (jacobian_reg_lambda lives in the model
+        # config only); scaled to the per-batch-sum convention of the loss.
+        if "stat_jacobian_loss" in outputs:
+            loss = loss + outputs["stat_jacobian_loss"] * labels.shape[0]
 
         metrics["lm_loss"] = lm_loss.detach()
         metrics["q_halt_loss"] = q_halt_loss.detach()

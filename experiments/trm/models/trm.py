@@ -45,7 +45,6 @@ from .layers import (
 
 @dataclass
 class TRMConfig:
-    batch_size: int
     seq_len: int
     vocab_size: int
 
@@ -95,6 +94,14 @@ class TRMConfig:
     jacobian_reg_lambda: float = 0.0     # FDA Jacobian penalty weight
     jacobian_eps: float = 1e-3
     n_jacobian_samples: int = 1
+
+    def __post_init__(self):
+        if self.grad_mode not in ("neumann", "phantom", "bptt"):
+            raise ValueError(f"Unknown grad_mode: {self.grad_mode!r}")
+        if self.norm_style not in ("post", "pre"):
+            raise ValueError(f"Unknown norm_style: {self.norm_style!r}")
+        if self.pos_encodings not in ("rope", "learned", "none"):
+            raise ValueError(f"Unknown pos_encodings: {self.pos_encodings!r}")
 
 
 @dataclass
@@ -279,11 +286,11 @@ class TRMInnerBase(nn.Module):
     def _seq_info(self) -> Dict:
         return {"cos_sin": self.rotary_emb() if hasattr(self, "rotary_emb") else None}
 
-    def empty_carry(self, batch_size: int) -> InnerCarry:
+    def empty_carry(self, batch_size: int, device=None) -> InnerCarry:
         shape = (batch_size, self.config.seq_len + self.puzzle_emb_len, self.config.hidden_size)
         return InnerCarry(
-            z=torch.empty(*shape, dtype=self.forward_dtype),
-            y=torch.empty(*shape, dtype=self.forward_dtype),
+            z=torch.empty(*shape, dtype=self.forward_dtype, device=device),
+            y=torch.empty(*shape, dtype=self.forward_dtype, device=device),
         )
 
     def reset_carry(self, reset_flag: torch.Tensor, carry: InnerCarry) -> InnerCarry:
@@ -323,8 +330,7 @@ class TRMInner(TRMInnerBase):
 
         new_carry = InnerCarry(z=z.detach(), y=y.detach())
         output, q_halt, q_continue = self._outputs(y)
-        stats = {"inner_iters": torch.tensor(float(self.config.H_cycles * self.config.L_cycles)),
-                 "converged_frac": torch.tensor(float("nan"))}
+        stats = {"inner_iters": y.new_tensor(float(self.config.H_cycles * self.config.L_cycles))}
         return new_carry, output, (q_halt, q_continue), stats
 
 
@@ -338,10 +344,11 @@ class ACTWrapper(nn.Module):
 
     def initial_carry(self, batch: Dict[str, torch.Tensor]) -> Carry:
         batch_size = batch["inputs"].shape[0]
+        device = batch["inputs"].device
         return Carry(
-            inner_carry=self.inner.empty_carry(batch_size),
-            steps=torch.zeros((batch_size,), dtype=torch.int32),
-            halted=torch.ones((batch_size,), dtype=torch.bool),
+            inner_carry=self.inner.empty_carry(batch_size, device=device),
+            steps=torch.zeros((batch_size,), dtype=torch.int32, device=device),
+            halted=torch.ones((batch_size,), dtype=torch.bool, device=device),
             current_data={k: torch.empty_like(v) for k, v in batch.items()},
         )
 

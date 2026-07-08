@@ -116,8 +116,8 @@ def test_implicit_path_detaches_forward_loop():
     seen_steps = {}
     orig = type(model.layers[0].attn)._run_loop
 
-    def spy(self, x, row_ids, col_ids):
-        z, steps, norms, tok = orig(self, x, row_ids, col_ids)
+    def spy(self, x, row_ids, col_ids, drop_mask=None):
+        z, steps, norms, tok = orig(self, x, row_ids, col_ids, drop_mask)
         seen_steps["grad_in_loop"] = z.requires_grad and z.grad_fn is not None
         return z, steps, norms, tok
 

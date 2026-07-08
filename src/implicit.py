@@ -72,10 +72,17 @@ class _NeumannImplicitGrad(torch.autograd.Function):
 
         g = grad_output if mask is None else grad_output * mask
 
+        if ctx.steps == 0:
+            # Phantom gradient (still masked when a mask is given).
+            return g, None, None, None, None, None
+
         z_var = z_star.detach().requires_grad_(True)
         with torch.enable_grad():
             z_next = ctx.f(z_var)
 
+        # tol <= 0 disables the per-step relative-change check, which costs a
+        # host sync (.item()) per adjoint iteration on GPU.
+        check_tol = ctx.tol > 0
         lam = g
         for _ in range(ctx.steps):
             vjp = torch.autograd.grad(
@@ -88,10 +95,13 @@ class _NeumannImplicitGrad(torch.autograd.Function):
             if mask is not None:
                 vjp = vjp * mask
             lam_new = vjp + g
-            rel = (lam_new - lam).norm() / (lam.norm() + 1e-12)
-            lam = lam_new
-            if rel.item() < ctx.tol:
-                break
+            if check_tol:
+                rel = (lam_new - lam).norm() / (lam.norm() + 1e-12)
+                lam = lam_new
+                if rel.item() < ctx.tol:
+                    break
+            else:
+                lam = lam_new
 
         return lam, None, None, None, None, None
 
@@ -103,6 +113,7 @@ def attach_implicit_grad(
     adjoint_steps: int = 10,
     adjoint_tol: float = 1e-4,
     conv_mask: Optional[torch.Tensor] = None,
+    min_conv_frac: float = 0.1,
 ) -> torch.Tensor:
     """Attach an implicit-gradient backward graph to a converged state.
 
@@ -110,18 +121,29 @@ def attach_implicit_grad(
         z_star_detached: converged state, detached from any graph.
         f: differentiable update map; must close over its other inputs (x,
            masks, ...) so those receive gradients through the single call.
+           IMPORTANT: the closure is re-invoked at backward time for the
+           adjoint VJPs, so everything it captures (e.g. a dropout mask) must
+           still be alive and identical then — bind such state explicitly in
+           the closure rather than reading it from mutable module attributes.
         adjoint_steps: Neumann terms for the adjoint solve. 0 = phantom grad.
-        adjoint_tol: relative-change stopping tolerance for the adjoint solve.
+        adjoint_tol: relative-change stopping tolerance for the adjoint solve
+           (<= 0 disables the check and always runs adjoint_steps terms).
         conv_mask: optional boolean/float mask of converged positions,
            broadcastable to z_star's leading dims. Non-converged positions are
            excluded from the adjoint solve (masked implicit differentiation).
+           Applied in phantom mode too (the source term is masked).
+        min_conv_frac: if fewer than this fraction of positions converged, the
+           mask is dropped to avoid gradient starvation early in training.
 
     Returns:
         z_star with gradients: one differentiable application of f at z*,
         wrapped so the incoming gradient is refined by the Neumann solve.
     """
+    if conv_mask is not None and conv_mask.float().mean() < min_conv_frac:
+        conv_mask = None
+
     z_graph = f(z_star_detached)
-    if adjoint_steps > 0:
+    if adjoint_steps > 0 or conv_mask is not None:
         z_graph = _NeumannImplicitGrad.apply(
             z_graph, z_star_detached, f, adjoint_steps, adjoint_tol, conv_mask
         )
@@ -138,7 +160,6 @@ def fixed_point_solve(
     stepsize: float = 1.0,
     stepsize_decay: float = 1.0,
     decay_patience: int = 0,
-    fp_thresh: Optional[float] = None,
     eps: float = 1e-8,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """Damped fixed-point iteration z <- s*f(z) + (1-s)*z under no_grad.
@@ -167,9 +188,9 @@ def fixed_point_solve(
     step = torch.full((B,), float(stepsize), device=device, dtype=torch.float32)
     best = torch.full((B,), float("inf"), device=device)
     patience = torch.full((B,), float(decay_patience), device=device)
-    thresh = tol if fp_thresh is None else fp_thresh
 
-    residual = None
+    residual = torch.full(z.shape[:-1], float("inf"), device=device)
+    sample_res = residual.flatten(1).max(dim=1).values if residual.dim() > 1 else residual
     steps_run = 0
     for k in range(max_iter):
         z_new = f(z)
@@ -191,7 +212,7 @@ def fixed_point_solve(
             improved = sample_res < best
             best = torch.minimum(sample_res, best)
             patience = torch.where(improved, torch.full_like(patience, float(decay_patience)), patience - 1)
-            adapt = (patience <= 0) & (sample_res >= thresh)
+            adapt = (patience <= 0) & (sample_res >= tol)
             patience = torch.where(adapt, torch.full_like(patience, float(decay_patience)), patience)
             step = torch.where(adapt, step * stepsize_decay, step)
 
@@ -203,7 +224,7 @@ def fixed_point_solve(
         "steps": torch.tensor(steps_run, device=device),
         "residual": residual,
         "converged": converged,
-        "sample_residual": residual.flatten(1).max(dim=1).values if residual.dim() > 1 else residual,
+        "sample_residual": sample_res,
         "stepsize": step,
     }
     return z, info
@@ -237,44 +258,3 @@ def estimate_spectral_radius(
             return 0.0
         v = jv / growth
     return growth
-
-
-def estimate_lipschitz(
-    f: Callable[[torch.Tensor], torch.Tensor],
-    z: torch.Tensor,
-    *,
-    n_iter: int = 30,
-    seed: Optional[int] = None,
-) -> float:
-    """Estimate ||J_f(z)||_2 by power iteration with JVPs/VJPs.
-
-    Uses double backprop-free power iteration on J^T J via paired VJP calls.
-    Returns the estimated spectral norm of the Jacobian of f at z, i.e. the
-    local Lipschitz constant of f. Values < 1 certify local contraction; note
-    this is an upper bound on the spectral radius and can be loose for
-    non-normal Jacobians (use estimate_spectral_radius for the sharp check).
-    """
-    if seed is not None:
-        torch.manual_seed(seed)
-
-    z_var = z.detach().requires_grad_(True)
-    with torch.enable_grad():
-        out = f(z_var)
-
-    u = torch.randn_like(out)
-    u = u / u.norm()
-    sigma = 0.0
-    for _ in range(n_iter):
-        # v = J^T u
-        (v,) = torch.autograd.grad(out, z_var, grad_outputs=u, retain_graph=True)
-        v_norm = v.norm()
-        if v_norm == 0:
-            return 0.0
-        v = v / v_norm
-        # u = J v  via double-VJP trick: JVP through a VJP graph
-        w = torch.zeros_like(out, requires_grad=True)
-        (vjp_w,) = torch.autograd.grad(out, z_var, grad_outputs=w, retain_graph=True, create_graph=True)
-        (u_new,) = torch.autograd.grad(vjp_w, w, grad_outputs=v, retain_graph=True)
-        sigma = u_new.norm().item()
-        u = u_new / (u_new.norm() + 1e-12)
-    return sigma

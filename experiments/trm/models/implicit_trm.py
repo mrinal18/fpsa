@@ -60,7 +60,17 @@ class ImplicitTRMInner(TRMInnerBase):
     def __init__(self, config: TRMConfig):
         super().__init__(config)
         self.L_level = ReasoningModule(config)
-        self._last_stats: Dict[str, float] = {}
+        if not (config.residual_scale or config.spectral_norm):
+            import warnings
+            warnings.warn(
+                "ImplicitTRM without residual_scale or spectral_norm: the "
+                "residual identity path makes the update map non-contractive, "
+                "so the fixed-point solve is unlikely to converge and the "
+                "Neumann adjoint may diverge. Enable residual_scale=True "
+                "(default in the itrm configs) unless this is a deliberate "
+                "ablation.",
+                stacklevel=2,
+            )
 
     # ----- the latent update map -----
     def _make_f(self, y: torch.Tensor, input_embeddings: torch.Tensor, seq_info: Dict):
@@ -77,15 +87,23 @@ class ImplicitTRMInner(TRMInnerBase):
         return f_s
 
     def _jacobian_reg(self, f, z_star: torch.Tensor) -> torch.Tensor:
-        """FDA estimate of ||J_f(z*) v||^2 (FPRM-style contractivity penalty)."""
+        """FDA estimate of ||J_f(z*) v||^2 (FPRM-style contractivity penalty).
+
+        Computed in float32: bf16 resolution (~2^-8 relative) is coarser than
+        the jacobian_eps=1e-3 probe, so a bf16 finite difference would measure
+        quantization noise amplified by 1/(2*eps) instead of the Jacobian.
+        The blocks cast weights to the input dtype (CastedLinear), so feeding
+        fp32 inputs runs the probe in fp32 end to end.
+        """
         cfg = self.config
         if not self.training or cfg.jacobian_reg_lambda == 0.0 or cfg.n_jacobian_samples == 0:
-            return z_star.new_zeros(())
-        estimate = z_star.new_zeros(())
+            return z_star.new_zeros((), dtype=torch.float32)
+        z0 = z_star.detach().to(torch.float32)
+        estimate = z0.new_zeros(())
         for _ in range(cfg.n_jacobian_samples):
-            v = (torch.randn_like(z_star) / math.sqrt(z_star.shape[-1])).detach()
-            z_p = f(z_star.detach() + cfg.jacobian_eps * v)
-            z_m = f(z_star.detach() - cfg.jacobian_eps * v)
+            v = (torch.randn_like(z0) / math.sqrt(z0.shape[-1])).detach()
+            z_p = f(z0 + cfg.jacobian_eps * v).to(torch.float32)
+            z_m = f(z0 - cfg.jacobian_eps * v).to(torch.float32)
             jvp = (z_p - z_m) / (2 * cfg.jacobian_eps)
             estimate = estimate + jvp.pow(2).mean() / cfg.n_jacobian_samples
         return estimate
@@ -125,12 +143,9 @@ class ImplicitTRMInner(TRMInnerBase):
             return z_star, self._loop_stats(info, z_star)
 
         # Masked implicit differentiation: exclude non-converged tokens from
-        # the adjoint solve unless convergence is still rare (early training).
-        conv_mask = None
-        if self.config.mask_nonconverged:
-            converged = info["converged"]
-            if converged.float().mean() >= 0.1:
-                conv_mask = converged
+        # the adjoint solve (attach_implicit_grad drops the mask itself when
+        # convergence is still rare, to avoid gradient starvation).
+        conv_mask = info["converged"] if self.config.mask_nonconverged else None
 
         f_s = self._damped(f, info["stepsize"])
         adjoint_steps = 0 if cfg.grad_mode == "phantom" else cfg.adjoint_steps
@@ -177,7 +192,9 @@ class ImplicitTRMInner(TRMInnerBase):
             "converged_frac": conv_last.detach(),
         }
         if self.config.jacobian_reg_lambda > 0:
-            stats["jacobian_loss"] = jac_loss  # kept differentiable; loss head adds it
+            # Pre-weighted and differentiable; the loss head adds any
+            # "jacobian_loss" stat it receives, so the lambda lives here only.
+            stats["jacobian_loss"] = self.config.jacobian_reg_lambda * jac_loss
         return new_carry, output, (q_halt, q_continue), stats
 
 

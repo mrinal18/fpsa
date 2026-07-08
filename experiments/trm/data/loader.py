@@ -63,7 +63,10 @@ class TrainBatcher:
         starts, ends = g[:-1], g[1:]
         picks = starts + (self.rng.rand(self.num_groups) * (ends - starts)).astype(np.int64)
         order = self.rng.permutation(self.num_groups)
-        self._queue = list(picks[order])
+        # Extend (not replace): the leftover tail of the previous epoch is
+        # kept, so every group is visited once per epoch, and the loop in
+        # next_batch terminates even when num_groups < batch_size.
+        self._queue.extend(picks[order])
 
     def next_batch(self, device: torch.device) -> Dict[str, torch.Tensor]:
         while len(self._queue) < self.batch_size:

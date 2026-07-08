@@ -4,7 +4,7 @@ Protocol matches the TRM reference (deep supervision with ACT: one supervision
 step per optimizer step, per-slot carry persisting across steps, sequences
 scored when they halt; EMA weights for eval; stablemax CE).
 
-Single-GPU with optional gradient accumulation: pass --micro-batch-size to
+Single-GPU with optional gradient accumulation: pass --micro_batch_size to
 split the global batch into independent carry streams (each micro-batch keeps
 its own ACT carry, so semantics are preserved exactly).
 
@@ -20,7 +20,7 @@ Examples:
 """
 
 import argparse
-import copy
+
 import json
 import math
 import os
@@ -106,14 +106,35 @@ DEFAULTS = dict(
 )
 
 
+# Types for options whose DEFAULTS value is None (argparse can't infer them).
+_NONE_DEFAULT_TYPES = {
+    "run_name": str,
+    "micro_batch_size": int,
+    "grad_clip": float,
+    "forward_dtype": str,
+    "norm_style": str,
+    "residual_scale": bool,
+    "inner_max_iter_eval": int,
+}
+
+
+def _parse_bool(s: str) -> bool:
+    if s.lower() in ("1", "true", "yes"):
+        return True
+    if s.lower() in ("0", "false", "no"):
+        return False
+    raise argparse.ArgumentTypeError(f"expected a boolean, got {s!r}")
+
+
 def parse_config() -> dict:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", default=None, help="YAML/JSON file with config overrides")
     for k, v in DEFAULTS.items():
-        if isinstance(v, bool):
-            p.add_argument(f"--{k}", type=lambda s: s.lower() in ("1", "true", "yes"), default=None)
+        t = _NONE_DEFAULT_TYPES[k] if v is None else type(v)
+        if t is bool:
+            p.add_argument(f"--{k}", type=_parse_bool, default=None)
         else:
-            p.add_argument(f"--{k}", type=(type(v) if v is not None else str), default=None)
+            p.add_argument(f"--{k}", type=t, default=None)
     args = p.parse_args()
 
     cfg = dict(DEFAULTS)
@@ -140,24 +161,48 @@ def parse_config() -> dict:
 # --------------------------------------------------------------------------
 
 class EMAHelper:
+    """EMA over trainable parameters only.
+
+    Buffers are deliberately excluded: spectral-norm parametrizations keep
+    power-iteration vectors (_u/_v) as buffers, and EMA-averaging those unit
+    vectors would corrupt the sigma estimate used to normalize the weight at
+    eval time. Init-constant buffers (z_init/y_init, rotary caches) don't
+    change during training, so excluding them is lossless.
+
+    Evaluation swaps EMA weights into the live model and restores afterwards —
+    no deepcopy of the module.
+    """
+
     def __init__(self, model: torch.nn.Module, mu: float):
         self.mu = mu
         self.shadow = {
-            k: v.detach().clone().float()
-            for k, v in model.state_dict().items()
-            if v.dtype.is_floating_point
+            k: p.detach().clone().float()
+            for k, p in model.named_parameters()
+            if p.requires_grad
         }
+        self._backup = None
 
     @torch.no_grad()
     def update(self, model: torch.nn.Module):
-        for k, v in model.state_dict().items():
+        for k, p in model.named_parameters():
             if k in self.shadow:
-                self.shadow[k].mul_(self.mu).add_(v.detach().float(), alpha=1 - self.mu)
+                self.shadow[k].mul_(self.mu).add_(p.detach().float(), alpha=1 - self.mu)
 
-    def copy_to(self, model: torch.nn.Module):
-        sd = model.state_dict()
-        for k, v in self.shadow.items():
-            sd[k].copy_(v.to(sd[k].dtype))
+    @torch.no_grad()
+    def swap_in(self, model: torch.nn.Module):
+        assert self._backup is None, "swap_in called twice without swap_out"
+        self._backup = {}
+        for k, p in model.named_parameters():
+            if k in self.shadow:
+                self._backup[k] = p.detach().clone()
+                p.copy_(self.shadow[k].to(p.dtype))
+
+    @torch.no_grad()
+    def swap_out(self, model: torch.nn.Module):
+        for k, p in model.named_parameters():
+            if k in self._backup:
+                p.copy_(self._backup[k])
+        self._backup = None
 
 
 # --------------------------------------------------------------------------
@@ -186,12 +231,7 @@ def evaluate(loss_head: ACTLossHead, test_data: SplitData, batch_size: int,
     totals = {"count": 0.0, "accuracy": 0.0, "exact_accuracy": 0.0,
               "inner_iters": 0.0, "iters_batches": 0.0}
     for batch, n_real in iter_test_batches(test_data, batch_size, device):
-        carry = model.initial_carry(batch)
-        carry.inner_carry.z = carry.inner_carry.z.to(device)
-        carry.inner_carry.y = carry.inner_carry.y.to(device)
-        carry.steps = carry.steps.to(device)
-        carry.halted = carry.halted.to(device)
-        carry.current_data = {k: v.to(device) for k, v in carry.current_data.items()}
+        carry = model.initial_carry(batch)  # allocated on the batch's device
 
         while True:
             carry, outputs = model(carry=carry, batch=batch)
@@ -263,7 +303,6 @@ def main():
     n_micro = cfg["global_batch_size"] // micro_bs
 
     model_config = TRMConfig(
-        batch_size=micro_bs,
         seq_len=meta["seq_len"],
         vocab_size=meta["vocab_size"],
         H_cycles=cfg["H_cycles"], L_cycles=cfg["L_cycles"], L_layers=cfg["L_layers"],
@@ -287,7 +326,6 @@ def main():
     model = build(model_config).to(device)
     loss_head = ACTLossHead(
         model, loss_type=cfg["loss_type"], q_loss_coeff=cfg["q_loss_coeff"],
-        jacobian_reg_lambda=cfg["jacobian_reg_lambda"],
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -333,21 +371,17 @@ def main():
             g["lr"] = lr_now
 
         opt.zero_grad(set_to_none=True)
-        step_metrics: Dict[str, float] = {}
         for i in range(n_micro):
             batch = batchers[i].next_batch(device)
             if carries[i] is None:
-                carries[i] = model.initial_carry(batch)
-                carries[i].inner_carry.z = carries[i].inner_carry.z.to(device)
-                carries[i].inner_carry.y = carries[i].inner_carry.y.to(device)
-                carries[i].steps = carries[i].steps.to(device)
-                carries[i].halted = carries[i].halted.to(device)
-                carries[i].current_data = {k: v.to(device) for k, v in carries[i].current_data.items()}
+                carries[i] = model.initial_carry(batch)  # on the batch device
 
             carries[i], loss, metrics, _, _ = loss_head(carry=carries[i], batch=batch)
             ((1.0 / cfg["global_batch_size"]) * loss).backward()
+            # Accumulate as tensors — .float()/.item() here would force a
+            # GPU->CPU sync per micro-batch; convert only at the log boundary.
             for k, v in metrics.items():
-                step_metrics[k] = step_metrics.get(k, 0.0) + float(v)
+                running[k] = running.get(k, 0.0) + v.detach()
 
         if cfg["grad_clip"]:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
@@ -355,15 +389,14 @@ def main():
         if ema is not None:
             ema.update(model)
 
-        for k, v in step_metrics.items():
-            running[k] = running.get(k, 0.0) + v
         running["_n"] = running.get("_n", 0) + 1
 
         if step % max(1, eval_every // 10) == 0:
             n = running.pop("_n")
-            count = max(running.pop("count", 0.0), 1.0)
+            count = max(float(running.pop("count", 0.0)), 1.0)
             line = {"step": step, "lr": lr_now, "elapsed_s": round(time.time() - t0, 1)}
             for k, v in running.items():
+                v = float(v)
                 if k.endswith("loss"):
                     line[f"train/{k}"] = v / (cfg["global_batch_size"] * n)
                 elif k.startswith("stat_"):
@@ -379,11 +412,11 @@ def main():
             running = {}
 
         if step % eval_every == 0 or step == total_steps:
-            eval_model = loss_head
             if ema is not None:
-                eval_model = copy.deepcopy(loss_head)
-                ema.copy_to(eval_model.model)
-            metrics = evaluate(eval_model, test_data, micro_bs, device)
+                ema.swap_in(model)
+            metrics = evaluate(loss_head, test_data, micro_bs, device)
+            if ema is not None:
+                ema.swap_out(model)
             metrics["step"] = step
             print(json.dumps({k: (round(v, 5) if isinstance(v, float) else v) for k, v in metrics.items()}))
             with open(log_path, "a") as f:
