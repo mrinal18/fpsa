@@ -1,0 +1,19 @@
+# TRM baseline (attention variant) on Sudoku-Extreme — reference protocol.
+# Reference result: ~75% exact accuracy (TRM-Att); ~87% for the MLP variant.
+data_dir: data/sudoku-extreme-1k-aug-1000
+arch: trm
+epochs: 50000
+eval_interval: 5000
+global_batch_size: 768
+lr: 1.0e-4
+puzzle_emb_lr: 1.0e-4
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+ema: true
+H_cycles: 3
+L_cycles: 6
+L_layers: 2
+hidden_size: 512
+num_heads: 8
+pos_encodings: rope
+halt_max_steps: 16

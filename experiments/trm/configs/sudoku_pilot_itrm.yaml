@@ -1,0 +1,22 @@
+# Pilot: Implicit TRM at 10% budget.
+data_dir: data/sudoku-extreme-1k-aug-1000
+arch: itrm
+epochs: 5000
+eval_interval: 500
+global_batch_size: 768
+lr: 1.0e-4
+puzzle_emb_lr: 1.0e-4
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+ema: true
+halt_max_steps: 16
+norm_style: pre
+damping: 0.9
+inner_tol: 1.0e-2
+inner_max_iter: 16
+inner_max_iter_eval: 64
+grad_mode: neumann
+adjoint_steps: 10
+residual_scale: true
+alpha_1_init: 0.75
+alpha_2_init: 0.25

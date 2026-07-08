@@ -1,0 +1,21 @@
+# TRM baseline on Maze-Hard 30x30 (reference: ~85% exact accuracy).
+# seq_len=900: use micro-batches; fits 4x A100-40GB in the reference. With a
+# single 80GB GPU try micro_batch_size 96-192.
+data_dir: data/maze-30x30-hard-1k-noaug
+arch: trm
+epochs: 50000
+eval_interval: 5000
+global_batch_size: 768
+micro_batch_size: 96
+lr: 1.0e-4
+puzzle_emb_lr: 1.0e-4
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+ema: true
+H_cycles: 3
+L_cycles: 6
+L_layers: 2
+hidden_size: 512
+num_heads: 8
+pos_encodings: rope
+halt_max_steps: 16

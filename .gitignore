@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+experiments/trm/data/data/
+experiments/trm/results/
+results/
+experiments/trm/data/sudoku-*/
+experiments/trm/data/maze-*/
+experiments/trm/checkpoints/

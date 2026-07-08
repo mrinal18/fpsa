@@ -1,0 +1,34 @@
+# Implicit TRM on Sudoku-Extreme: latent recursion solved to a fixed point,
+# trained with Neumann implicit gradients (O(1) memory in inner depth).
+data_dir: data/sudoku-extreme-1k-aug-1000
+arch: itrm
+epochs: 50000
+eval_interval: 5000
+global_batch_size: 768
+lr: 1.0e-4
+puzzle_emb_lr: 1.0e-4
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+ema: true
+H_cycles: 3
+L_layers: 2
+hidden_size: 512
+num_heads: 8
+pos_encodings: rope
+halt_max_steps: 16
+# implicit solver
+norm_style: pre
+damping: 0.9
+stepsize_decay: 0.9
+decay_patience: 5
+inner_tol: 1.0e-2
+inner_max_iter: 16
+inner_max_iter_eval: 64
+grad_mode: neumann
+adjoint_steps: 10
+mask_nonconverged: true
+spectral_norm: false
+jacobian_reg_lambda: 0.0
+residual_scale: true
+alpha_1_init: 0.75
+alpha_2_init: 0.25

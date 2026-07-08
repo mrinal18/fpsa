@@ -1,0 +1,27 @@
+# CPU smoke test: tiny model on synthetic sudoku. Build the data first:
+#   python data/build_synthetic_sudoku.py --output-dir data/sudoku-synthetic-small
+data_dir: data/sudoku-synthetic-small
+arch: itrm
+epochs: 60
+eval_interval: 30
+global_batch_size: 32
+lr: 3.0e-4
+puzzle_emb_lr: 3.0e-4
+weight_decay: 0.1
+puzzle_emb_weight_decay: 0.1
+ema: true
+hidden_size: 64
+num_heads: 4
+puzzle_emb_len: 4
+H_cycles: 2
+L_layers: 2
+halt_max_steps: 4
+inner_max_iter: 8
+inner_max_iter_eval: 16
+inner_tol: 1.0e-3
+damping: 0.9
+grad_mode: neumann
+adjoint_steps: 5
+residual_scale: true
+alpha_1_init: 0.75
+alpha_2_init: 0.25

@@ -1,0 +1,12 @@
+# Pilot: 10% of the full budget for ranking variants quickly (~2h on L40S).
+data_dir: data/sudoku-extreme-1k-aug-1000
+arch: trm
+epochs: 5000
+eval_interval: 500
+global_batch_size: 768
+lr: 1.0e-4
+puzzle_emb_lr: 1.0e-4
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+ema: true
+halt_max_steps: 16

@@ -177,8 +177,10 @@ def fixed_point_solve(
             s = step.view(-1, *([1] * (z.dim() - 1))).to(z.dtype)
             z_new = s * z_new + (1.0 - s) * z
 
-        num = (z_new - z).norm(dim=-1)
-        den = z.norm(dim=-1).clamp_min(eps)
+        # Residuals in >= fp32: bf16 quantization floors relative residuals
+        # around 2^-9, which would make tighter tolerances unreachable.
+        num = (z_new - z).to(torch.promote_types(z.dtype, torch.float32)).norm(dim=-1)
+        den = z.to(torch.promote_types(z.dtype, torch.float32)).norm(dim=-1).clamp_min(eps)
         residual = num / den                      # (B, N)
         sample_res = residual.flatten(1).max(dim=1).values if residual.dim() > 1 else residual
 
