@@ -143,8 +143,18 @@ class FPSAReasoner(nn.Module):
         cfg = self.cfg
         if not self.training or cfg.contraction_lambda <= 0:
             return None
+        if cfg.max_iter <= 1:
+            # Non-recursive control: there is no loop to keep contractive, and
+            # charging it the regulariser's extra forwards would distort the
+            # per-step timing it is being compared on.
+            return None
         s0 = s_star.detach()
-        eps = cfg.jacobian_eps
+        # Relative finite-difference step. An absolute epsilon is badly scaled
+        # here: the probe direction is normalised over the whole state, so each
+        # coordinate is perturbed by only eps/sqrt(numel), which in float32
+        # leaves the difference dominated by round-off and biases the estimate
+        # high. Scaling by ||s|| makes the perturbation a fixed *relative* size.
+        eps = cfg.jacobian_eps * s0.norm().clamp_min(1e-6)
 
         def fd_jvp(v):
             return (step_fn(s0 + eps * v) - step_fn(s0 - eps * v)) / (2 * eps)

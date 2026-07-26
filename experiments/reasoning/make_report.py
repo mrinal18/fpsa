@@ -284,6 +284,14 @@ trainer, schedule and seeds.
 {fig('fig_learning_curves', 'Learning curves.')}
 
 {fig('fig_generalization', 'Held-out instances harder than anything seen in training.')}
+
+### 9.1 The matched-memory comparison
+
+Comparing at equal *iteration count* understates the method. The point of an
+O(1) backward is that iterations stop costing memory, so the fair practical
+question is what each model can do at equal memory:
+
+{table('matched_memory')}
 """)
 
     abl_files = sorted(glob.glob(os.path.join(TAB, "ablation_*.md")))
@@ -292,6 +300,18 @@ trainer, schedule and seeds.
                      "\n".join(open(f).read() for f in abl_files) + "\n")
 
     parts.append("""
+## 10.1 Why the in-loop residual is not optional
+
+The FPSA inner map re-injects the layer input at every iteration:
+``u <- x + W_O A(u) V``. Drop that term and the map is ``u <- W_O A(u) V`` with
+``A`` row-stochastic — iterating a stochastic averaging operator pulls every
+token toward the same vector, so the fixed point is near rank-1 and the
+alignment carries almost nothing to differentiate through. We hit this while
+building FPSA-R: the version without the term learned *slower than the ablation
+with no in-layer loop at all*.
+
+{RANK_TABLE}
+
 ## 11. Scope and honest limitations
 
 * **Scale.** Every number here was produced on 4 CPU cores. The models are
@@ -319,8 +339,8 @@ trainer, schedule and seeds.
 # mechanism experiments (minutes on CPU)
 python experiments/reasoning/mechanism.py
 
-# full comparison grid (~3h on 4 CPU cores)
-./scripts/run_reasoning_grid.sh
+# everything: mechanism suite, comparison grid, matched-memory study (~2.5h)
+./scripts/run_all_fpsa_r.sh
 
 # tables + figures + this document
 python experiments/reasoning/analyze.py
@@ -340,7 +360,7 @@ Code layout:
 | `experiments/reasoning/` | tasks, trainer, grid runner, mechanism suite, analysis |
 """)
 
-    text = "\n".join(parts)
+    text = "\n".join(parts).replace("{RANK_TABLE}", table("mech_rank_collapse"))
     with open(os.path.join(DOC, "FPSA-R.md"), "w") as f:
         f.write(text)
     print(f"wrote docs/FPSA-R.md ({len(text)} chars)")

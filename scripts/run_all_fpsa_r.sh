@@ -5,12 +5,14 @@ set -u
 cd "$(dirname "$0")/.."
 mkdir -p results
 
+MECH_ONLY="${MECH_ONLY:-m1_gradient_fidelity m2_activation_memory m5_solver_cost \
+m6_token_convergence m7_rank_collapse m4_adjoint_solver m3_contraction_dynamics \
+m1b_fidelity_vs_contraction}"
+
 {
   echo "### mechanism suite"
-  python3 experiments/reasoning/mechanism.py --threads 1 \
-      --only m1_gradient_fidelity m2_activation_memory m5_solver_cost \
-             m6_token_convergence m7_rank_collapse m4_adjoint_solver \
-             m3_contraction_dynamics m1b_fidelity_vs_contraction
+  # shellcheck disable=SC2086
+  python3 experiments/reasoning/mechanism.py --threads 1 --only $MECH_ONLY
   echo "### mechanism done"
 } >> results/mechanism.log 2>&1 &
 MECH=$!

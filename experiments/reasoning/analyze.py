@@ -537,7 +537,7 @@ def table_rank_collapse():
     bm, bsd = mean_sd(b)
     write_table("mech_rank_collapse",
                 ["Inner FPSA map", "effective rank of the fixed point", "of max"],
-                [[f"**u <- x + W_O A(u) V**  (FPSA-R)", f"**{am:.1f} ± {asd:.1f}**", d["n_tokens"]],
+                [["**u <- x + W_O A(u) V**  (FPSA-R)", f"**{am:.1f} ± {asd:.1f}**", d["n_tokens"]],
                  ["u <- W_O A(u) V  (no in-loop residual)", f"{bm:.1f} ± {bsd:.1f}", d["n_tokens"]]],
                 caption=f"Effective rank (entropy of the singular-value spectrum) of the "
                         f"converged inner attention state, {d['n_seeds']} random inits, "
@@ -546,46 +546,78 @@ def table_rank_collapse():
                         f"the fixed point loses {100*(1-bm/am):.0f}% of its effective rank.")
 
 
+def matched_memory(runs):
+    """The practical payoff: at *less* activation memory than FPRM's truncated
+    BPTT uses at 8 iterations, the O(1) backward lets FPSA-R run 32."""
+    mm = load_runs(os.path.join(RES, "matched_memory", "*.json"))
+    if not mm or not runs:
+        return
+    rows = []
+    entries = [("FPRM (trunc. BPTT K=4), T=8", runs.get(("maze7", "fprm"))),
+               ("Looped Transformer (BPTT), T=8", runs.get(("maze7", "looped_bptt"))),
+               ("FPSA-R (implicit), T=8", runs.get(("maze7", "fpsa_r"))),
+               ("**FPSA-R (implicit), T=32**", list(mm.values())[0] if mm else None)]
+    for label, rs in entries:
+        if not rs:
+            continue
+        em, es = mean_sd([r["final"]["exact_match"] for r in rs])
+        mem, _ = mean_sd([r["activation_mb"] for r in rs])
+        stp, _ = mean_sd([r["step_time_s"] for r in rs])
+        T = rs[0]["config"]["max_iter"]
+        rows.append([label, T, f"{mem:.1f}", f"{stp:.2f}", fmt(em, es), len(rs)])
+    if rows:
+        write_table("matched_memory",
+                    ["Model", "train iters T", "Act. mem (MB)", "s / step",
+                     "Exact match (%)", "seeds"], rows,
+                    caption="Matched-memory comparison on maze7. Because the backward "
+                            "pass stores one step regardless of T, FPSA-R can quadruple "
+                            "its reasoning depth and still store less than a "
+                            "truncated-BPTT loop does at T=8.")
+
+
 def fig_architecture(name="fig_architecture"):
     """Schematic of where the loop sits in each family of model."""
-    fig, axes = plt.subplots(1, 3, figsize=(12.6, 3.6))
     panels = [
-        ("Looped Transformer / FPRM", ["Attn", "MLP"], "loop the whole block",
-         C["looped_bptt"], True, True),
-        ("FPSA (in-layer only)", ["Attn", "MLP"], "loop attention, one pass through the block",
-         C["deq_block"], True, False),
-        ("FPSA-R (ours)", ["Attn", "MLP"], "joint equilibrium over both",
-         C["fpsa_r"], True, True),
+        ("Looped Transformer / FPRM", C["looped_bptt"], False, True,
+         "loop the whole block; gradient by (truncated) BPTT"),
+        ("FPSA (in-layer only)", C["deq_block"], True, False,
+         "loop attention; one pass through the block"),
+        ("FPSA-R (ours)", C["fpsa_r"], True, True,
+         "one joint equilibrium over both; O(1)-memory adjoint"),
     ]
-    for ax, (title, boxes, sub, col, inner, outer) in zip(axes, panels):
+    fig, axes = plt.subplots(1, 3, figsize=(13.2, 4.2))
+    for ax, (title, col, inner, outer, sub) in zip(axes, panels):
         ax.set_xlim(0, 10)
-        ax.set_ylim(0, 6)
+        ax.set_ylim(0, 10)
         ax.axis("off")
-        xs = [2.2, 6.0]
-        for x, b in zip(xs, boxes):
-            ax.add_patch(plt.Rectangle((x, 2.4), 2.4, 1.5, facecolor="white",
-                                       edgecolor="#555555", lw=1.4, zorder=3))
-            ax.text(x + 1.2, 3.15, b, ha="center", va="center", fontsize=10.5,
-                    color="#222222", zorder=4)
-        ax.annotate("", xy=(6.0, 3.15), xytext=(4.6, 3.15),
-                    arrowprops=dict(arrowstyle="->", color="#555555", lw=1.3))
-        ax.annotate("", xy=(2.2, 3.15), xytext=(0.7, 3.15),
-                    arrowprops=dict(arrowstyle="->", color="#555555", lw=1.3))
-        ax.annotate("", xy=(9.5, 3.15), xytext=(8.4, 3.15),
-                    arrowprops=dict(arrowstyle="->", color="#555555", lw=1.3))
-        if inner and title != "Looped Transformer / FPRM":
-            ax.annotate("", xy=(2.4, 2.3), xytext=(4.4, 2.3),
-                        arrowprops=dict(arrowstyle="->", color=col, lw=2.0,
-                                        connectionstyle="arc3,rad=0.55"))
-            ax.text(3.4, 1.15, "in-layer FPSA\n(Q,K from $u$; $V$ frozen)", ha="center",
-                    fontsize=8, color=col)
+        by, bh = 4.3, 1.7
+        for x, lbl in ((2.0, "Attn"), (5.9, "MLP")):
+            ax.add_patch(plt.Rectangle((x, by), 2.1, bh, facecolor="white",
+                                       edgecolor="#4A4A4A", lw=1.5, zorder=3))
+            ax.text(x + 1.05, by + bh / 2, lbl, ha="center", va="center",
+                    fontsize=11, color="#1A1A1A", zorder=4)
+        yc = by + bh / 2
+        for x0, x1 in ((0.5, 2.0), (4.1, 5.9), (8.0, 9.5)):
+            ax.annotate("", xy=(x1, yc), xytext=(x0, yc),
+                        arrowprops=dict(arrowstyle="-|>", color="#4A4A4A", lw=1.4))
+        if inner:
+            ax.annotate("", xy=(2.25, by - 0.12), xytext=(3.85, by - 0.12),
+                        arrowprops=dict(arrowstyle="-|>", color=col, lw=2.2,
+                                        connectionstyle="arc3,rad=0.6"))
+            ax.text(3.05, 2.25, "in-layer FPSA", ha="center", fontsize=9,
+                    color=col, weight="bold")
+            ax.text(3.05, 1.5, "$Q,K$ from $u$;  $V$ frozen", ha="center",
+                    fontsize=8.5, color=col)
         if outer:
-            ax.annotate("", xy=(1.6, 4.3), xytext=(8.6, 4.3),
-                        arrowprops=dict(arrowstyle="->", color=col, lw=2.0,
-                                        connectionstyle="arc3,rad=0.35"))
-            ax.text(5.1, 5.35, "outer recursion", ha="center", fontsize=8, color=col)
-        ax.set_title(title, fontsize=11, color="#111111", loc="left")
-        ax.text(0.0, 0.2, sub, fontsize=8.5, color="#666666", transform=ax.transAxes)
+            ax.annotate("", xy=(1.6, by + bh + 0.35), xytext=(8.4, by + bh + 0.35),
+                        arrowprops=dict(arrowstyle="-|>", color=col, lw=2.2,
+                                        connectionstyle="arc3,rad=0.4"))
+            ax.text(5.0, 9.1, "outer recursion", ha="center", fontsize=9,
+                    color=col, weight="bold")
+        ax.text(0.5, 0.35, sub, fontsize=8.5, color="#666666")
+        ax.set_title(title, fontsize=11.5, color="#111111", loc="left", pad=6)
+    fig.suptitle("Where the fixed-point loop lives", fontsize=13, x=0.012,
+                 ha="left", y=1.02, color="#111111")
     save(fig, name)
 
 
@@ -613,6 +645,7 @@ def main():
         fig_test_time_scaling(runs)
         fig_learning_curves(runs)
         fig_generalization(runs)
+        matched_memory(runs)
     abl = load_runs(os.path.join(RES, "ablation", "*.json"))
     if abl:
         task_tables(abl, "ablation", ABL_ORDER)

@@ -101,19 +101,19 @@ gradient of a deeply-unrolled loop.
 
 | Gradient scheme | cosine vs exact | relative error |
 | --- | --- | --- |
-| **FPSA-R implicit (Anderson)** | 0.999979 ± 0.000036 | 0.0055 ± 0.0043 |
-| FPSA-R implicit (Neumann) | 0.999979 ± 0.000036 | 0.0055 ± 0.0043 |
-| 1-step phantom gradient | 0.995795 ± 0.000400 | 0.1004 ± 0.0055 |
-| truncated BPTT  K=1 | 0.995807 ± 0.000400 | 0.1003 ± 0.0055 |
-| truncated BPTT  K=2 | 0.999809 ± 0.000021 | 0.0213 ± 0.0013 |
-| truncated BPTT  K=4 | 0.999978 ± 0.000038 | 0.0057 ± 0.0044 |
-| truncated BPTT  K=6 | 0.999975 ± 0.000039 | 0.0061 ± 0.0044 |
-| full BPTT       T=12 | 0.999975 ± 0.000039 | 0.0061 ± 0.0044 |
+| **FPSA-R implicit (Anderson)** | 0.999976 ± 0.000021 | 0.0069 ± 0.0026 |
+| FPSA-R implicit (Neumann) | 0.999976 ± 0.000021 | 0.0069 ± 0.0026 |
+| 1-step phantom gradient | 0.991373 ± 0.000777 | 0.1438 ± 0.0078 |
+| truncated BPTT  K=1 | 0.991379 ± 0.000784 | 0.1437 ± 0.0079 |
+| truncated BPTT  K=2 | 0.999320 ± 0.000047 | 0.0421 ± 0.0022 |
+| truncated BPTT  K=4 | 0.999972 ± 0.000023 | 0.0075 ± 0.0026 |
+| truncated BPTT  K=6 | 0.999972 ± 0.000025 | 0.0072 ± 0.0030 |
+| full BPTT       T=12 | 0.999972 ± 0.000025 | 0.0073 ± 0.0030 |
 
 
-FPSA-R's adjoint reaches cosine 0.999979 against exact BPTT —
+FPSA-R's adjoint reaches cosine 0.999976 against exact BPTT —
 matching full BPTT at the same forward budget while storing a single step. The
-1-step phantom gradient that the FPSA paper uses is **18x
+1-step phantom gradient that the FPSA paper uses is **21x
 less accurate**, and truncated BPTT needs K=4–6 unrolled steps (and the memory
 that implies) to catch up.
 
@@ -154,21 +154,28 @@ qualitatively deeper reasoning loop.
 
 ## 5. Is the joint solve actually cheaper than nesting?
 
-**Cost of reaching residual < 0.001 on Sudoku (batch 32). Both solvers reach the same equilibrium; the joint formulation gets there with 2.3x fewer attention calls and 1.53x less wall clock.**
+**Cost of reaching residual < 0.001 on Sudoku (batch 32). Both solvers reach the same equilibrium; the joint formulation gets there with 2.0x fewer attention calls and 1.26x less wall clock.**
 
 | Two-level solver | outer iters | attention calls | ms / forward | final residual |
 | --- | --- | --- | --- | --- |
-| Nested (inner loop inside each outer step) | 5 | 16 | 409 | 5.1e-04 |
-| **Joint (ours)** | 7 | **7** | **267** | 4.8e-04 |
+| Nested (inner loop inside each outer step) | 5 | 14 | 261 | 3.5e-04 |
+| **Joint (ours)** | 7 | **7** | **207** | 3.1e-04 |
 
 
-Reaching the same equilibrium takes **2.3x fewer
-attention calls** and 1.53x less wall clock than
+Reaching the same equilibrium takes **2.0x fewer
+attention calls** and 1.26x less wall clock than
 solving the inner FPSA loop nested inside each outer step.
 
 ## 6. The adjoint solver
 
-_(not run yet)_
+**VJP evaluations needed for a relative adjoint error below 1e-4, measured on the trained model's own Jacobian.**
+
+| rho | Neumann VJPs | Anderson VJPs | speedup |
+| --- | --- | --- | --- |
+| 0.477 | 11 | 6 | **1.83x** |
+| 0.612 | 18 | 8 | **2.25x** |
+| 0.696 | 26 | 9 | **2.89x** |
+
 
 ![Backward linear solve measured on the model own Jacobian. Anderson mixing (solid) vs Neumann series (dashed).](../results/figures/fig_adjoint_solver.png)
 
@@ -185,6 +192,16 @@ _(not run yet)_
 
 *Per-token distance to the fixed point across iterations on a Sudoku grid. Given cells settle almost immediately; blank cells — the ones that actually have to be solved — keep moving for many more iterations.*
 
+
+
+## 10.1 Why the in-loop residual is not optional
+
+**Effective rank (entropy of the singular-value spectrum) of the converged inner attention state, 5 random inits, 40 iterations. Without the input re-injection the row-stochastic attention operator averages tokens together and the fixed point loses 66% of its effective rank.**
+
+| Inner FPSA map | effective rank of the fixed point | of max |
+| --- | --- | --- |
+| **u <- x + W_O A(u) V**  (FPSA-R) | **25.6 ± 0.4** | 49 |
+| u <- W_O A(u) V  (no in-loop residual) | 8.7 ± 0.4 | 49 |
 
 
 ## 11. Scope and honest limitations
