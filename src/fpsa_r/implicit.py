@@ -29,7 +29,8 @@ from typing import Callable, Optional
 
 import torch
 
-from .solvers import anderson_solve, neumann_solve, picard_solve
+from .solvers import (anderson_forward, anderson_solve, broyden_solve,
+                      gmres_solve, neumann_solve, picard_solve)
 
 # Populated on every backward pass; the trainer logs it.
 BACKWARD_STATS = {"iters": 0, "rel": 0.0, "calls": 0, "masked_frac": 0.0}
@@ -71,7 +72,9 @@ class _JointAdjoint(torch.autograd.Function):
             m = mask.to(grad.dtype).view(1, mask.shape[0], mask.shape[1], 1)
             grad = grad * m
 
-        if ctx.solver == "neumann":
+        if ctx.solver == "gmres":
+            lam, n, rel = gmres_solve(vjp, grad, ctx.max_iter, ctx.tol, mask=m)
+        elif ctx.solver == "neumann":
             lam, n, rel = neumann_solve(vjp, grad, ctx.max_iter, ctx.tol, mask=m)
         else:
             am, ab, al = ctx.anderson
@@ -135,11 +138,19 @@ def solve_equilibrium(step_fn: Callable[[torch.Tensor], torch.Tensor],
         return s, out_info
 
     # --- equilibrium modes: solve without a graph, then attach one -----------
+    token_tol = cfg.fp_thresh * cfg.adjoint_mask_tol_mult
     with torch.no_grad():
-        s_star, info = picard_solve(
-            step_fn, s0, max_iter, cfg.fp_thresh, cfg.stepsize,
-            cfg.stepsize_decay, cfg.decay_patience, record_trace,
-            token_tol=cfg.fp_thresh * cfg.adjoint_mask_tol_mult)
+        if cfg.forward_solver == "broyden":
+            s_star, info = broyden_solve(step_fn, s0, max_iter, cfg.fp_thresh,
+                                         m=cfg.broyden_m, token_tol=token_tol)
+        elif cfg.forward_solver == "anderson":
+            s_star, info = anderson_forward(step_fn, s0, max_iter, cfg.fp_thresh,
+                                            m=cfg.anderson_m, token_tol=token_tol)
+        else:
+            s_star, info = picard_solve(
+                step_fn, s0, max_iter, cfg.fp_thresh, cfg.stepsize,
+                cfg.stepsize_decay, cfg.decay_patience, record_trace,
+                token_tol=token_tol)
     s_star = s_star.detach()
 
     if not (training and torch.is_grad_enabled()):

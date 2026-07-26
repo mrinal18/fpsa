@@ -26,7 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from src.fpsa_r import build_model                                       # noqa: E402
 from src.fpsa_r.diagnostics import (ActivationMemory,                    # noqa: E402
                                     empirical_spectral_radius)
-from src.fpsa_r.solvers import anderson_solve, neumann_solve             # noqa: E402
+from src.fpsa_r.solvers import (anderson_forward, anderson_solve,       # noqa: E402
+                                broyden_solve, gmres_solve, neumann_solve,
+                                picard_solve)
 from experiments.reasoning.tasks import make_task                        # noqa: E402
 from experiments.reasoning.train import stablemax_ce                     # noqa: E402
 
@@ -461,6 +463,63 @@ def m7_rank_collapse(iters=40, n_seeds=5):
             "effective_rank": out}
 
 
+def m8_solver_range(alphas=(0.4, 0.55, 0.7, 0.8, 0.9, 0.95, 1.0), budget=64,
+                    tol=1e-4, n_seeds=2):
+    """How far past rho = 1 does each solver keep working?
+
+    The contraction requirement usually attributed to implicit differentiation
+    is really a property of the solvers it is paired with. Picard iteration
+    converges iff the map contracts. The Neumann series for the adjoint
+    converges iff it contracts. Neither restriction is intrinsic: implicit
+    differentiation needs a *findable* fixed point and an invertible
+    ``I - J``, and stronger solvers deliver both over a wider range.
+
+    Forward: Picard vs Anderson acceleration vs limited-memory Broyden.
+    Backward: Neumann vs Anderson vs GMRES, a Krylov method that converges
+    whenever the system is invertible regardless of spectral radius.
+
+    Sweeping the input-injection coefficient sweeps rho through and past 1.
+    """
+    t = _task(name="maze", n=128, size=7)
+    X = t.train.x[:8]
+    rows = []
+    for a in alphas:
+        per = {k: [] for k in ("rho", "picard", "anderson_f", "broyden",
+                               "neumann", "anderson_b", "gmres")}
+        for seed in range(n_seeds):
+            torch.manual_seed(seed)
+            m = build_model("deq_block", **_cfg_kw(
+                t, alpha_1_init=0.9, alpha_2_init=a, spectral_norm=False,
+                max_iter=budget, max_iter_eval=budget, contraction_lambda=0.0))
+            m.eval()
+            xin = m._inputs(X, None)
+            si = m._seq_info(xin.shape[1])
+            sf = lambda s: m.block.joint_step(s, xin, si)
+            s0 = m.block.init_state(X.shape[0], xin.shape[1], xin.device, xin.dtype)
+            with torch.no_grad():
+                sp, ip = picard_solve(sf, s0, budget, tol)
+                sa, ia = anderson_forward(sf, s0, budget, tol)
+                sb, ib = broyden_solve(sf, s0, budget, tol)
+            best = min([(ia.rel_residual, sa), (ip.rel_residual, sp),
+                        (ib.rel_residual, sb)], key=lambda kv: kv[0])[1]
+            per["rho"].append(empirical_spectral_radius(sf, best))
+            per["picard"].append(ip.rel_residual)
+            per["anderson_f"].append(ia.rel_residual)
+            per["broyden"].append(ib.rel_residual)
+
+            with torch.enable_grad():
+                sv = best.detach().requires_grad_(True)
+                so = sf(sv)
+            vjp = lambda l: torch.autograd.grad(so, sv, l, retain_graph=True)[0]
+            torch.manual_seed(100 + seed)
+            g = torch.randn_like(best)
+            per["neumann"].append(neumann_solve(vjp, g, 30, 1e-8)[2])
+            per["anderson_b"].append(anderson_solve(vjp, g, 30, 1e-8)[2])
+            per["gmres"].append(gmres_solve(vjp, g, 30, 1e-8)[2])
+        rows.append({k: sum(v) / len(v) for k, v in per.items()} | {"alpha": a})
+    return {"budget": budget, "tol": tol, "n_seeds": n_seeds, "rows": rows}
+
+
 EXPERIMENTS = {
     "m1_gradient_fidelity": m1_gradient_fidelity,
     "m1b_fidelity_vs_contraction": m1b_fidelity_vs_contraction,
@@ -471,6 +530,7 @@ EXPERIMENTS = {
     "m5_solver_cost": m5_solver_cost,
     "m6_token_convergence": m6_token_convergence,
     "m7_rank_collapse": m7_rank_collapse,
+    "m8_solver_range": m8_solver_range,
 }
 
 

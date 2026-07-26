@@ -52,11 +52,21 @@ class FPSARConfig:
     mlp_sigma: float = 0.5           # spectral cap on the SwiGLU projections
     attn_temperature: float = 1.0    # learnable per-head tau, initialised here
 
+    # ---- forward solver ----
+    # "picard" needs the map to contract. "anderson"/"broyden" do not: they are
+    # root-finders, so the contraction requirement belongs to the solver rather
+    # than to implicit differentiation itself.
+    forward_solver: Literal["picard", "anderson", "broyden"] = "picard"
+    broyden_m: int = 8
+
     # ---- gradient scheme ----
     grad_mode: Literal["implicit", "bptt", "trunc_bptt", "onestep"] = "implicit"
     n_backwards: int = 6             # trunc_bptt: number of with-grad steps (FPRM's n_backwards_L)
     # implicit-diff backward solve
-    backward_solver: Literal["anderson", "neumann"] = "anderson"
+    # "neumann"/"anderson" are stationary iterations and converge only for
+    # rho < 1. "gmres" is a Krylov method: it converges whenever (I - J^T) is
+    # invertible, at the same cost of one VJP per iteration.
+    backward_solver: Literal["anderson", "neumann", "gmres"] = "anderson"
     backward_max_iter: int = 12
     backward_tol: float = 1e-4
     anderson_m: int = 5
@@ -112,6 +122,23 @@ ARCH_PRESETS = {
                            backward_solver="neumann"),
     "fpsa_r_nospec": dict(fpsa=True, solver_mode="joint", grad_mode="implicit",
                           spectral_norm=False),
+    # --- relaxing the contraction requirement (see docs/contraction.md) ---
+    # Krylov backward: removes rho < 1 from the adjoint solve.
+    "deq_gmres": dict(fpsa=False, grad_mode="implicit", backward_solver="gmres"),
+    # Root-finding forward + Krylov backward: removes it from both directions.
+    "deq_broyden": dict(fpsa=False, grad_mode="implicit", forward_solver="broyden",
+                        backward_solver="gmres"),
+    "deq_anderson_fwd": dict(fpsa=False, grad_mode="implicit",
+                             forward_solver="anderson", backward_solver="gmres"),
+    # Same, with the per-layer spectral caps removed: the capacity the caps cost
+    # is only worth paying if the solvers actually need it.
+    "deq_free": dict(fpsa=False, grad_mode="implicit", forward_solver="broyden",
+                     backward_solver="gmres", spectral_norm=False,
+                     contraction_target=1.0),
+    "deq_free_anderson": dict(fpsa=False, grad_mode="implicit",
+                              forward_solver="anderson", backward_solver="gmres",
+                              spectral_norm=False, contraction_target=1.0),
+
     # --- baselines ---
     "deq_block": dict(fpsa=False, grad_mode="implicit"),      # implicit diff, no in-layer FPSA
     "fprm": dict(fpsa=False, grad_mode="trunc_bptt"),         # FPRM: damped FP + truncated BPTT

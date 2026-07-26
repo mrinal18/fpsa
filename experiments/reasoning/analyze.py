@@ -654,6 +654,55 @@ def fig_converged(name="fig_converged_forward"):
     save(fig, name)
 
 
+def fig_solver_range(name="fig_solver_range"):
+    """How far past rho = 1 each solver keeps working."""
+    d = mech("m8_solver_range")
+    if not d:
+        return
+    rows = d["rows"]
+    rho = [r["rho"] for r in rows]
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(10.8, 3.9))
+    fwd = [("picard", "Picard (contraction required)", "#B0B0B0", "--"),
+           ("broyden", "Broyden (quasi-Newton)", "#2E86AB", "--"),
+           ("anderson_f", "Anderson acceleration", C["fpsa_r"], "-")]
+    for k, lbl, col, ls in fwd:
+        ax.plot(rho, [r[k] for r in rows], marker="o", ms=4, lw=2.4 if ls == "-" else 1.5,
+                ls=ls, color=col, label=lbl)
+    bwd = [("neumann", "Neumann series", "#B0B0B0", "--"),
+           ("anderson_b", "Anderson mixing", "#2E86AB", "--"),
+           ("gmres", "GMRES (Krylov)", C["fpsa_r"], "-")]
+    for k, lbl, col, ls in bwd:
+        ax2.plot(rho, [r[k] for r in rows], marker="o", ms=4, lw=2.4 if ls == "-" else 1.5,
+                 ls=ls, color=col, label=lbl)
+    for a, ttl, yl in ((ax, "Forward: residual reached in %d steps" % d["budget"],
+                        "relative residual"),
+                       (ax2, "Backward: adjoint error in 30 VJPs",
+                        "relative error of the adjoint")):
+        a.axvline(1.0, color="#D1495B", ls=":", lw=1.4)
+        a.text(1.02, 0.02, r"$\rho=1$", transform=a.get_xaxis_transform(),
+               fontsize=8.5, color="#D1495B")
+        a.axhline(d["tol"], color="#888888", ls=":", lw=1.0)
+        a.set_yscale("log")
+        style(a, title=ttl, xlabel=r"spectral radius $\rho$", ylabel=yl)
+    save(fig, name)
+
+
+def table_solver_range():
+    d = mech("m8_solver_range")
+    if not d:
+        return
+    rows = [[f"{r['rho']:.2f}", f"{r['picard']:.1e}", f"{r['broyden']:.1e}",
+             f"**{r['anderson_f']:.1e}**", f"{r['neumann']:.1e}",
+             f"{r['anderson_b']:.1e}", f"**{r['gmres']:.1e}**"] for r in d["rows"]]
+    write_table("mech_solver_range",
+                ["rho", "fwd: Picard", "fwd: Broyden", "fwd: Anderson",
+                 "bwd: Neumann", "bwd: Anderson", "bwd: GMRES"], rows,
+                caption=f"Residual reached by each forward solver in {d['budget']} "
+                        f"steps, and adjoint error reached by each backward solver "
+                        f"in 30 VJPs, as the spectral radius is swept through 1. "
+                        f"Mean over {d['n_seeds']} inits.")
+
+
 def fig_architecture(name="fig_architecture"):
     """Schematic of where the loop sits in each family of model."""
     panels = [
@@ -713,6 +762,8 @@ def main():
     fig_memory()
     fig_contraction()
     fig_forward_budget()
+    fig_solver_range()
+    table_solver_range()
     fig_adjoint()
     fig_token_convergence()
     fig_architecture()
