@@ -272,17 +272,24 @@ between the two budgets: BPTT is flat (78.9 to
 computed, while the implicit models gain 75.8 to
 81.3 once their premise is satisfied.
 
-### 9.3 What did not work
+### 9.3 The in-layer FPSA loop
 
-Adding FPSA's in-layer attention fixed point costs about ten points at both
-budgets (71.9 vs 81.3 at T=32) and
-hurts size generalisation badly (10.4 vs 28.5 at 9x9). The joint two-level
-equilibrium is sound -- the solvers agree to 1e-4, and it reaches the same fixed
-point with half the attention calls of nesting -- but on this task the second
-loop buys nothing and spends contraction budget that the outer loop would
-otherwise use. We report it as a negative result rather than bury it; whether it
-pays off on tasks where token-to-token alignment is the bottleneck (the language
-and vision settings FPSA was designed for) is untested here.
+Under the capped recipe, adding FPSA's in-layer attention fixed point costs
+about ten points at both budgets (71.9 against
+81.3 at T=32) and a third of the size-generalisation score.
+That penalty turns out to be an artefact of the constraint rather than of the
+second loop: once the per-layer spectral caps are removed (Section 11), the two
+are within noise of each other in distribution -- 96.2 +- 0.7 with the in-layer
+loop against 95.6 +- 1.2 without -- while extrapolation is still somewhat worse
+with it (71.1 against 77.3 at 9x9, 41.4 against 49.5 at 11x11).
+
+So the honest verdict on the in-layer loop is *neutral to slightly negative on
+this task*, not the ten-point penalty the capped comparison suggested. The joint
+two-level equilibrium is sound in its own right -- the joint and nested solvers
+agree to 1e-4 and the joint one halves the attention calls -- but on grid
+planning the second loop is not where the win is. Whether it pays off on tasks
+where token-to-token alignment is the bottleneck, which is what FPSA was designed
+for, is untested here.
 
 ![Exact-match accuracy at T=8. Error bars are sd over seeds.](../results/figures/fig_task_accuracy.png)
 
@@ -363,10 +370,31 @@ solution the forward pass never reaches. Stronger solvers do not rescue this.
 Anderson acceleration will happily *find* fixed points at rho > 1 (Section 8),
 and the gradient there is still worthless.
 
-_(not run yet)_
+**Implicit gradient against exact BPTT through 300 steps, forward budget 32. The gradient is faithful on both sides of the comparison while rho < 1 and collapses past it, so the caps are not what makes it valid -- the spectral radius is.**
 
-*Do we need per-layer spectral caps to get rho < 1?* No. At matched rho the
-gradient is equally faithful with the caps and without them, so the caps are a
+| contractivity via | rho | forward residual | cosine vs exact | relative error |
+| --- | --- | --- | --- | --- |
+| spectral caps | 0.53 | 5.9e-05 | 1.00000 | 0.0046 |
+| spectral caps | 0.66 | 6.2e-05 | 1.00000 | 0.0046 |
+| spectral caps | 0.79 | 7.5e-05 | 1.00000 | 0.0039 |
+| spectral caps | 0.93 | 8.5e-05 | 1.00000 | 0.0036 |
+| spectral caps | 1.06 | 9.1e-03 | 0.40907 | 14.8633 |
+| spectral caps | 1.13 | 2.0e-03 | -0.02245 | 40.7102 |
+| spectral caps | 1.19 | 3.0e-02 | -0.02030 | 500.7234 |
+| no caps | 0.55 | 6.0e-05 | 1.00000 | 0.0000 |
+| no caps | 0.68 | 5.8e-05 | 1.00000 | 0.0000 |
+| no caps | 0.82 | 8.5e-05 | 1.00000 | 0.0005 |
+| no caps | 0.96 | 1.4e-03 | 0.54626 | 0.5104 |
+| no caps | 1.09 | 2.1e-02 | 0.01923 | 1.6071 |
+| no caps | 1.16 | 7.5e-02 | 0.02646 | 501.0867 |
+| no caps | 1.23 | 6.6e-02 | 0.01732 | 500.5000 |
+
+
+*Do we need per-layer spectral caps to get rho < 1?* No. Both routes give a
+gradient that is exact to five decimal places over the whole band the models
+actually train in; without caps the faithful band is a little narrower at the
+top (degradation begins near rho = 0.95 rather than 1.0), which is comfortably
+above the rho = 0.60-0.69 the trained models sit at. So the caps are a
 conservative sufficient condition for something the spectral-radius penalty
 already enforces directly -- and they cost a great deal of capacity. Replacing
 them with a rho target of 1.0, and using Anderson acceleration forward with a
@@ -380,7 +408,8 @@ GMRES adjoint so that neither solver is the binding constraint:
 | spectral caps + Picard + Anderson adj. | 81.35 ± 2.07 | 28.5 | 4.1 | 57 | 0.34 | 0.67 | 2 |
 | spectral caps + Picard + GMRES adj. | 81.25 ± 2.76 | 30.9 | 4.1 | 57 | 0.52 | 0.67 | 2 |
 | spectral caps + Anderson fwd + GMRES | 78.03 ± 1.52 | 25.8 | 2.3 | 57 | 0.54 | 0.64 | 2 |
-| **no caps + Anderson fwd + GMRES (ours)** | 95.41 ± 0.97 | 79.9 | 53.5 | 55 | 0.50 | 0.69 | 2 |
+| **no caps + Anderson + GMRES + in-layer FPSA** | 96.19 ± 0.69 | 71.1 | 41.4 | 59 | 0.57 | 0.62 | 2 |
+| no caps + Anderson fwd + GMRES (ours) | 95.61 ± 1.20 | 77.3 | 49.5 | 55 | 0.52 | 0.60 | 4 |
 
 
 Every row sits at rho 0.63-0.69, so this is a comparison at matched

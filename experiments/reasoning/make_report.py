@@ -324,17 +324,24 @@ between the two budgets: BPTT is flat ({q('em8_bptt', '{:.1f}')} to
 computed, while the implicit models gain {q('em8_ours', '{:.1f}')} to
 {q('em_ours', '{:.1f}')} once their premise is satisfied.
 
-### 9.3 What did not work
+### 9.3 The in-layer FPSA loop
 
-Adding FPSA's in-layer attention fixed point costs about ten points at both
-budgets ({q('em_fpsar', '{:.1f}')} vs {q('em_ours', '{:.1f}')} at T=32) and
-hurts size generalisation badly (10.4 vs 28.5 at 9x9). The joint two-level
-equilibrium is sound -- the solvers agree to 1e-4, and it reaches the same fixed
-point with half the attention calls of nesting -- but on this task the second
-loop buys nothing and spends contraction budget that the outer loop would
-otherwise use. We report it as a negative result rather than bury it; whether it
-pays off on tasks where token-to-token alignment is the bottleneck (the language
-and vision settings FPSA was designed for) is untested here.
+Under the capped recipe, adding FPSA's in-layer attention fixed point costs
+about ten points at both budgets ({q('em_fpsar', '{:.1f}')} against
+{q('em_ours', '{:.1f}')} at T=32) and a third of the size-generalisation score.
+That penalty turns out to be an artefact of the constraint rather than of the
+second loop: once the per-layer spectral caps are removed (Section 11), the two
+are within noise of each other in distribution -- 96.2 +- 0.7 with the in-layer
+loop against 95.6 +- 1.2 without -- while extrapolation is still somewhat worse
+with it (71.1 against 77.3 at 9x9, 41.4 against 49.5 at 11x11).
+
+So the honest verdict on the in-layer loop is *neutral to slightly negative on
+this task*, not the ten-point penalty the capped comparison suggested. The joint
+two-level equilibrium is sound in its own right -- the joint and nested solvers
+agree to 1e-4 and the joint one halves the attention calls -- but on grid
+planning the second loop is not where the win is. Whether it pays off on tasks
+where token-to-token alignment is the bottleneck, which is what FPSA was designed
+for, is untested here.
 
 {fig('fig_task_accuracy', 'Exact-match accuracy at T=8. Error bars are sd over seeds.')}
 
@@ -394,8 +401,11 @@ and the gradient there is still worthless.
 
 {FAITH_TABLE}
 
-*Do we need per-layer spectral caps to get rho < 1?* No. At matched rho the
-gradient is equally faithful with the caps and without them, so the caps are a
+*Do we need per-layer spectral caps to get rho < 1?* No. Both routes give a
+gradient that is exact to five decimal places over the whole band the models
+actually train in; without caps the faithful band is a little narrower at the
+top (degradation begins near rho = 0.95 rather than 1.0), which is comfortably
+above the rho = 0.60-0.69 the trained models sit at. So the caps are a
 conservative sufficient condition for something the spectral-radius penalty
 already enforces directly -- and they cost a great deal of capacity. Replacing
 them with a rho target of 1.0, and using Anderson acceleration forward with a

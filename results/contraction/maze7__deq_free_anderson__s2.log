@@ -1,2 +1,18 @@
 [deq_free_anderson/maze/s2] step   250 loss 0.1114 tok 96.83 em 60.16 it 31.9
 [deq_free_anderson/maze/s2] step   500 loss 0.0249 tok 98.35 em 83.59 it 32.0
+[deq_free_anderson/maze/s2] step   750 loss 0.0264 tok 99.24 em 91.60 it 32.0
+[deq_free_anderson/maze/s2] step  1000 loss 0.0105 tok 99.74 em 97.07 it 32.0
+{
+ "arch": "deq_free_anderson",
+ "task": "maze",
+ "seed": 2,
+ "params": 135558,
+ "activation_mb": 55.27775573730469,
+ "step_time_s": 0.5510803063710531,
+ "final": {
+  "token_acc": 99.73692602040816,
+  "exact_match": 97.0703125,
+  "mean_iters": 32.0,
+  "mean_residual": 0.08362868725089356
+ }
+}

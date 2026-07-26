@@ -6,4 +6,5 @@
 | spectral caps + Picard + Anderson adj. | 81.35 ± 2.07 | 28.5 | 4.1 | 57 | 0.34 | 0.67 | 2 |
 | spectral caps + Picard + GMRES adj. | 81.25 ± 2.76 | 30.9 | 4.1 | 57 | 0.52 | 0.67 | 2 |
 | spectral caps + Anderson fwd + GMRES | 78.03 ± 1.52 | 25.8 | 2.3 | 57 | 0.54 | 0.64 | 2 |
-| **no caps + Anderson fwd + GMRES (ours)** | 95.41 ± 0.97 | 79.9 | 53.5 | 55 | 0.50 | 0.69 | 2 |
+| **no caps + Anderson + GMRES + in-layer FPSA** | 96.19 ± 0.69 | 71.1 | 41.4 | 59 | 0.57 | 0.62 | 2 |
+| no caps + Anderson fwd + GMRES (ours) | 95.61 ± 1.20 | 77.3 | 49.5 | 55 | 0.52 | 0.60 | 4 |

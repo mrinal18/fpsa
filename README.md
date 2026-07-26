@@ -28,12 +28,13 @@ and GMRES for the adjoint:
 
 | Configuration | Exact match | -> 9x9 | -> 11x11 | Act. mem | s/step |
 | --- | --- | --- | --- | --- | --- |
-| **no caps + Anderson fwd + GMRES adj.** | **95.4 ± 1.0** | **79.9** | **53.5** | **55 MB** | 0.50 |
+| **no caps + Anderson fwd + GMRES adj.** | **95.6 ± 1.2** | **77.3** | **49.5** | **55 MB** | 0.52 |
+| no caps + Anderson + GMRES + in-layer FPSA | 96.2 ± 0.7 | 71.1 | 41.4 | 59 MB | 0.57 |
 | spectral caps + Picard + Anderson adj. | 81.4 ± 2.1 | 28.5 | 4.1 | 57 MB | 0.34 |
 | FPRM (truncated BPTT) | 80.6 ± 1.5 | 26.8 | 2.5 | 108 MB | 0.36 |
 | Looped Transformer (full BPTT) | 79.0 ± 1.0 | 29.5 | 4.9 | 595 MB | 3.10 |
 
-Every row trains at rho 0.63-0.69, so this is a comparison at matched
+Every row trains at rho 0.60-0.69, so this is a comparison at matched
 contractivity. Against a fully-unrolled looped transformer that is **+16 points
 of exact match and an order of magnitude better extrapolation, at 1/10th the
 activation memory and 1/6th the time per step**.
@@ -51,11 +52,18 @@ is what costs accuracy. Two findings separate the concerns:
   condition for what the spectral-radius penalty already enforces directly, and
   removing them is worth the 14 points above.
 
-**What did not work.** Adding FPSA's in-layer attention fixed point costs about
-ten points under the capped recipe. And an early no-caps run *without* a
-spectral-radius target reached rho = 1.85 with a diverging forward pass: it
-scored 92.7 but was a weight-tied deep network with an arbitrary gradient, not an
-equilibrium model. Both are reported in full rather than omitted.
+**The in-layer FPSA loop.** Under the capped recipe it costs about ten points --
+but that turns out to be the constraint interacting badly with the second loop,
+not the loop itself. With the caps removed the two are within noise in
+distribution (96.2 ± 0.7 with it, 95.6 ± 1.2 without), though extrapolation is
+still somewhat worse with it. Neutral to slightly negative on this task, not the
+ten-point penalty the capped comparison suggested.
+
+**What did not work.** An early no-caps run *without* a spectral-radius target
+reached rho = 1.85 with a diverging forward pass. It scored 92.7, but was a
+weight-tied deep network with an arbitrary gradient rather than an equilibrium
+model -- the rho target is what makes the difference between that and the result
+above. Reported in full rather than omitted.
 
 Mechanism results, which are properties of the differentiation scheme rather
 than the task:

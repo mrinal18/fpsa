@@ -1,0 +1,18 @@
+**Implicit gradient against exact BPTT through 300 steps, forward budget 32. The gradient is faithful on both sides of the comparison while rho < 1 and collapses past it, so the caps are not what makes it valid -- the spectral radius is.**
+
+| contractivity via | rho | forward residual | cosine vs exact | relative error |
+| --- | --- | --- | --- | --- |
+| spectral caps | 0.53 | 5.9e-05 | 1.00000 | 0.0046 |
+| spectral caps | 0.66 | 6.2e-05 | 1.00000 | 0.0046 |
+| spectral caps | 0.79 | 7.5e-05 | 1.00000 | 0.0039 |
+| spectral caps | 0.93 | 8.5e-05 | 1.00000 | 0.0036 |
+| spectral caps | 1.06 | 9.1e-03 | 0.40907 | 14.8633 |
+| spectral caps | 1.13 | 2.0e-03 | -0.02245 | 40.7102 |
+| spectral caps | 1.19 | 3.0e-02 | -0.02030 | 500.7234 |
+| no caps | 0.55 | 6.0e-05 | 1.00000 | 0.0000 |
+| no caps | 0.68 | 5.8e-05 | 1.00000 | 0.0000 |
+| no caps | 0.82 | 8.5e-05 | 1.00000 | 0.0005 |
+| no caps | 0.96 | 1.4e-03 | 0.54626 | 0.5104 |
+| no caps | 1.09 | 2.1e-02 | 0.01923 | 1.6071 |
+| no caps | 1.16 | 7.5e-02 | 0.02646 | 501.0867 |
+| no caps | 1.23 | 6.6e-02 | 0.01732 | 500.5000 |

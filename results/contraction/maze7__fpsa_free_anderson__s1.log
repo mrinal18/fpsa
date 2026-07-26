@@ -1,0 +1,18 @@
+[fpsa_free_anderson/maze/s1] step   250 loss 0.0979 tok 97.32 em 70.51 it 31.7
+[fpsa_free_anderson/maze/s1] step   500 loss 0.0259 tok 98.33 em 84.77 it 32.0
+[fpsa_free_anderson/maze/s1] step   750 loss 0.0221 tok 99.47 em 94.53 it 32.0
+[fpsa_free_anderson/maze/s1] step  1000 loss 0.0632 tok 99.66 em 96.68 it 32.0
+{
+ "arch": "fpsa_free_anderson",
+ "task": "maze",
+ "seed": 1,
+ "params": 135558,
+ "activation_mb": 59.11036682128906,
+ "step_time_s": 0.4982607364654541,
+ "final": {
+  "token_acc": 99.65720663265306,
+  "exact_match": 96.6796875,
+  "mean_iters": 32.0,
+  "mean_residual": 0.059608843410387635
+ }
+}
