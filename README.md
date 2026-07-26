@@ -52,6 +52,22 @@ is what costs accuracy. Two findings separate the concerns:
   condition for what the spectral-radius penalty already enforces directly, and
   removing them is worth the 14 points above.
 
+**Why iterate attention at all.** A single softmax row averages, and at high
+temperature one pass is arbitrarily close to uniform. But the loop recomputes the
+alignment from the evolving state, which makes it the modern Hopfield retrieval
+dynamic and adds positive feedback a single pass does not have. Above a critical
+gain this recovers sharpness a single softmax *cannot express*: at beta = 16 one
+pass attends to an effective 46 of 48 keys while the fixed point attends to
+exactly one. Crucially the spectral radius is 1.18 at the near-uniform state the
+iteration escapes and 0.002 at the sharp fixed point it reaches -- softmax
+saturates, so `diag(a) - a a^T` vanishes as `a` approaches one-hot. Sharpening is
+expansive on the path and contractive at the destination, and implicit
+differentiation only constrains the destination. That is a mechanism for the gap
+above: per-layer caps bound the Jacobian everywhere, including at the smooth
+state the loop has to escape from. In the trained blocks the uncapped model is
+2.6x more selective at the first iteration and sharpens 2.7x more across the
+loop.
+
 **The in-layer FPSA loop.** Under the capped recipe it costs about ten points --
 but that turns out to be the constraint interacting badly with the second loop,
 not the loop itself. With the caps removed the two are within noise in

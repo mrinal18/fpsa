@@ -508,10 +508,26 @@ attention is uniquely able to do.
 
 {ARCH_SHARPEN_TABLE}
 
-The Hopfield analysis above is the mechanism in isolation, with keys tied to
-values and a scalar gain. Whether a trained block operates above or below its
-critical gain is an empirical question and the table reports it directly rather
-than assuming the favourable answer.
+Both trained blocks sharpen through the loop, so both sit above their critical
+gain -- but the two differ in how far, and in the direction the mechanism
+predicts. The rho-targeted model without per-layer caps is **2.6x more selective
+already at the first iteration** (an effective 9.4 keys against 24.6) and then
+sharpens **2.7x more** across the loop (-0.361 nats against -0.136). Capping
+every projection limits both the logit scale attention can reach and the
+feedback gain available to amplify it, which is the same constraint showing up
+twice.
+
+Two honest qualifications. First, the effect in the real architecture is modest
+next to the isolated dynamic: the trained models move from 9.4 to 6.6 effective
+keys, not from 46 to 1. They are living in Hopfield's *middle* regime -- the
+metastable states that average over a subset -- rather than in single-key
+retrieval. For constraint propagation on a grid that is arguably the right place
+to be, since a cell wants its relevant neighbourhood and not one other cell, but
+it does mean the dramatic collapse in the isolated dynamic is an upper bound on
+the mechanism rather than a description of what the model does. Second, this is
+one layer of one block on one task, measured on two checkpoints; it establishes
+that the mechanism is present and that the caps suppress it, not how much of the
+14-point accuracy gap it accounts for.
 
 ## 13. Scope and honest limitations
 
