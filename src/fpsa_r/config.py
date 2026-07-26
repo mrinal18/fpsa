@@ -64,6 +64,10 @@ class FPSARConfig:
     anderson_lam: float = 1e-4
     masked_adjoint: bool = True      # zero the adjoint on tokens that failed to converge
     adjoint_mask_tol_mult: float = 10.0  # token counts as converged if r_tok < mult * fp_thresh
+    # Masking is for outliers. If more than this fraction of tokens missed
+    # tolerance, the restricted equilibrium problem is meaningless and
+    # masking would gut the gradient, so we stop masking instead.
+    adjoint_mask_max_frac: float = 0.25
 
     # ---- halting / ACT ----
     halting: Literal["fixed_point", "act", "none"] = "fixed_point"

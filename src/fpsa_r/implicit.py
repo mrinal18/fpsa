@@ -152,9 +152,23 @@ def solve_equilibrium(step_fn: Callable[[torch.Tensor], torch.Tensor],
 
     mask = None
     if cfg.masked_adjoint and info.token_converged is not None:
-        mask = info.token_converged
-        if bool(mask.all()):
+        unconverged = 1.0 - float(info.token_converged.float().mean())
+        # Masking is an *outlier* mechanism: dropping the handful of coordinates
+        # that missed tolerance gives the exact gradient of the equilibrium
+        # problem restricted to the rest, and the bias is negligible precisely
+        # because the omitted set is tiny (<0.05% in the FPSA paper). When the
+        # omitted set is the majority -- which is what happens whenever the
+        # forward budget is short relative to the contraction factor -- the
+        # restricted problem is not a useful object, and masking silently
+        # attenuates the block gradient toward zero. Past the threshold we stop
+        # masking rather than train on almost no gradient.
+        if unconverged > cfg.adjoint_mask_max_frac or not bool(
+                info.token_converged.any()):
+            mask = None
+        elif bool(info.token_converged.all()):
             mask = None                      # nothing to mask; skip the multiply
+        else:
+            mask = info.token_converged
 
     s_out = _JointAdjoint.apply(
         s_next, s_star, mask, step_fn, cfg.backward_solver,
