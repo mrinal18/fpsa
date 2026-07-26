@@ -35,6 +35,10 @@ C = {
     "fpsa_r_neumann": "#EDAE49",
     "fpsa_r_nospec": "#9E9E9E",
     "deq_block": "#2E86AB",
+    "deq_gmres": "#7EA8BE",
+    "deq_anderson_fwd": "#4F86A0",
+    "deq_free_anderson": "#D1495B",
+    "fpsa_free_anderson": "#E8927C",
     "fprm": "#00798C",
     "looped_bptt": "#5C6B73",
     "ut_act": "#8FA6B2",
@@ -48,7 +52,11 @@ LABEL = {
     "fpsa_r_nomask": "FPSA-R, unmasked adjoint",
     "fpsa_r_neumann": "FPSA-R, Neumann adjoint",
     "fpsa_r_nospec": "FPSA-R, no spectral norm",
-    "deq_block": "FPRM loop + implicit gradient (ours)",
+    "deq_block": "spectral caps + Picard + Anderson adj.",
+    "deq_gmres": "spectral caps + Picard + GMRES adj.",
+    "deq_anderson_fwd": "spectral caps + Anderson fwd + GMRES",
+    "deq_free_anderson": "no caps + Anderson fwd + GMRES (ours)",
+    "fpsa_free_anderson": "no caps + Anderson + GMRES + in-layer FPSA",
     "fprm": "FPRM (truncated BPTT)",
     "looped_bptt": "Looped Transformer (BPTT)",
     "ut_act": "Universal Transformer + ACT",
@@ -749,6 +757,42 @@ def table_faithfulness():
                         f"spectral radius is.")
 
 
+def contraction_table():
+    """How to buy contractivity: hard per-layer caps vs a spectral-radius target,
+    crossed with solver strength."""
+    con = load_runs(os.path.join(RES, "contraction", "*.json"))
+    conv = load_runs(os.path.join(RES, "converged", "*.json"))
+    if not con:
+        return
+    rows = []
+    entries = [("looped_bptt", conv), ("deq_block", conv), ("deq_gmres", con),
+               ("deq_anderson_fwd", con), ("fpsa_free_anderson", con),
+               ("deq_free_anderson", con)]
+    avail = [(a, d) for a, d in entries if d.get(("maze", a))]
+    best = max(avail, key=lambda ad: st.mean(
+        [r["final"]["exact_match"] for r in ad[1][("maze", ad[0])]]))[0]
+    for a, d in avail:
+        rs = d[("maze", a)]
+        em, es = mean_sd([r["final"]["exact_match"] for r in rs])
+        e9, _ = mean_sd([r["extra"].get("size9", {}).get("exact_match")
+                         for r in rs if r.get("extra")])
+        e11, _ = mean_sd([r["extra"].get("size11", {}).get("exact_match")
+                          for r in rs if r.get("extra")])
+        mem, _ = mean_sd([r["activation_mb"] for r in rs])
+        stp, _ = mean_sd([r["step_time_s"] for r in rs])
+        rho, _ = mean_sd([h["rho_train"] for r in rs for h in r["history"][-1:]])
+        name = f"**{LABEL[a]}**" if a == best else LABEL[a]
+        rows.append([name, fmt(em, es), f"{e9:.1f}", f"{e11:.1f}",
+                     f"{mem:.0f}", f"{stp:.2f}", f"{rho:.2f}", len(rs)])
+    write_table("contraction_study",
+                ["Configuration", "Exact match (%)", "-> 9x9", "-> 11x11",
+                 "Act. mem (MB)", "s / step", "rho (train)", "seeds"], rows,
+                caption="maze7 at a forward budget of 32. 'rho (train)' is the "
+                        "spectral radius the contraction regulariser holds the map "
+                        "at during training; every row here sits below 1, where the "
+                        "implicit gradient is faithful (see the faithfulness table).")
+
+
 def fig_architecture(name="fig_architecture"):
     """Schematic of where the loop sits in each family of model."""
     panels = [
@@ -810,6 +854,7 @@ def main():
     fig_forward_budget()
     fig_solver_range()
     fig_faithfulness()
+    contraction_table()
     table_faithfulness()
     table_solver_range()
     fig_adjoint()

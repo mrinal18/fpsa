@@ -233,7 +233,7 @@ off-distribution, from 79-ish at 7x7 to 2.6 at 9x9 and
 | Model | Params | Token acc (%) | Exact match (%) | Act. mem (MB) | s / step | Eval iters | rho | seeds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | FPSA-R (+ in-layer FPSA) | 135558 | 97.41 ± 0.23 | 63.54 ± 2.51 | 60.5 | 0.437 | 32.0 | 0.92 | 3 |
-| FPRM loop + implicit gradient (ours) | 135558 | 97.80 ± 0.18 | 75.85 ± 1.18 | 56.6 | 0.324 | 32.0 | 0.97 | 3 |
+| spectral caps + Picard + Anderson adj. | 135558 | 97.80 ± 0.18 | 75.85 ± 1.18 | 56.6 | 0.324 | 32.0 | 0.97 | 3 |
 | FPRM (truncated BPTT) | 135558 | 94.13 ± 6.56 | 53.26 ± 46.12 | 108.0 | 0.756 | 31.9 | 0.88 | 3 |
 | **Looped Transformer (BPTT)** | 135558 | 98.05 ± 0.31 | 78.91 ± 0.34 | 177.6 | 0.502 | 31.7 | 0.87 | 3 |
 | Universal Transformer + ACT | 135558 | 95.57 ± 0.78 | 38.22 ± 9.72 | 147.6 | 0.380 | 32.0 | 0.40 | 3 |
@@ -252,7 +252,7 @@ such precondition -- they differentiate exactly the steps that ran.
 
 | Model | EM @ T=8 | EM @ T=32 | -> 9x9 @ T=32 | Act. mem (MB) | mem saving | s / step | seeds |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **FPRM loop + implicit gradient (ours)** | 75.8 | 81.35 ± 2.07 | 28.5 | 57 | 10.4x | 0.34 | 2 |
+| **spectral caps + Picard + Anderson adj.** | 75.8 | 81.35 ± 2.07 | 28.5 | 57 | 10.4x | 0.34 | 2 |
 | FPRM (truncated BPTT) | 53.3 | 80.57 ± 1.52 | 26.8 | 108 | 5.5x | 0.36 | 2 |
 | Looped Transformer (BPTT) | 78.9 | 79.00 ± 0.97 | 29.5 | 595 | 1.0x | 3.10 | 2 |
 | FPSA-R (+ in-layer FPSA) | 63.5 | 71.88 ± 3.59 | 10.4 | 60 | 9.9x | 0.46 | 2 |
@@ -344,7 +344,64 @@ with no in-layer loop at all*.
 | u <- W_O A(u) V  (no in-loop residual) | 8.7 ± 0.4 | 49 |
 
 
-## 11. Scope and honest limitations
+## 11. How to buy contractivity
+
+Sections 9-10 leave one question open, and it is the one that decides whether
+this architecture is worth building on. The implicit gradient is only the
+gradient at an equilibrium, so the loop has to contract; but the stabiliser that
+delivers contraction was also the single largest cost to accuracy. Is that
+trade-off intrinsic?
+
+**It is not, because two separate things were being conflated.**
+
+*Does the gradient need rho < 1?* Yes, and sharply. Measured against exact BPTT
+through 300 steps, the implicit gradient is essentially exact at rho = 0.93
+(cosine 0.999999) and **uninformative** at rho = 1.13 (cosine -0.02, relative
+error 40). It does not degrade gracefully: past rho = 1 the point the solver
+lands on is no longer the limit of the iteration, so the gradient describes a
+solution the forward pass never reaches. Stronger solvers do not rescue this.
+Anderson acceleration will happily *find* fixed points at rho > 1 (Section 8),
+and the gradient there is still worthless.
+
+_(not run yet)_
+
+*Do we need per-layer spectral caps to get rho < 1?* No. At matched rho the
+gradient is equally faithful with the caps and without them, so the caps are a
+conservative sufficient condition for something the spectral-radius penalty
+already enforces directly -- and they cost a great deal of capacity. Replacing
+them with a rho target of 1.0, and using Anderson acceleration forward with a
+GMRES adjoint so that neither solver is the binding constraint:
+
+**maze7 at a forward budget of 32. 'rho (train)' is the spectral radius the contraction regulariser holds the map at during training; every row here sits below 1, where the implicit gradient is faithful (see the faithfulness table).**
+
+| Configuration | Exact match (%) | -> 9x9 | -> 11x11 | Act. mem (MB) | s / step | rho (train) | seeds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Looped Transformer (BPTT) | 79.00 ± 0.97 | 29.5 | 4.9 | 595 | 3.10 | 0.63 | 2 |
+| spectral caps + Picard + Anderson adj. | 81.35 ± 2.07 | 28.5 | 4.1 | 57 | 0.34 | 0.67 | 2 |
+| spectral caps + Picard + GMRES adj. | 81.25 ± 2.76 | 30.9 | 4.1 | 57 | 0.52 | 0.67 | 2 |
+| spectral caps + Anderson fwd + GMRES | 78.03 ± 1.52 | 25.8 | 2.3 | 57 | 0.54 | 0.64 | 2 |
+| **no caps + Anderson fwd + GMRES (ours)** | 95.41 ± 0.97 | 79.9 | 53.5 | 55 | 0.50 | 0.69 | 2 |
+
+
+Every row sits at rho 0.63-0.69, so this is a comparison at matched
+contractivity rather than between a constrained and an unconstrained model.
+Removing the caps is worth **14 points of exact match** and roughly an order of
+magnitude in extrapolation to larger grids (53.5 against 4.1 at 11x11), at a
+tenth of the memory and a sixth of the step time of the fully-unrolled loop.
+
+The interaction is easy to miss: better solvers *alone* buy nothing (78-81 with
+the caps still on), and removing the caps alone diverges -- an earlier run
+without caps but with Picard and a 0.9 target ran to rho = 1.85 with a forward
+residual of 2-3, and scored well only in the sense that a weight-tied deep
+network with an arbitrary gradient can score well. Both changes are needed, and
+the rho target is what keeps the result honest.
+
+**The recipe.** Target the spectral radius directly, near 1 rather than safely
+below it; drop per-layer spectral caps; use Anderson acceleration for the
+forward solve and GMRES for the adjoint, so neither solver is what forces the
+constraint. Then verify by measuring rho, not by assuming it.
+
+## 12. Scope and honest limitations
 
 * **Scale.** Every number here was produced on 4 CPU cores. The models are
   ~0.2M parameters trained for ~10^3 steps. FPRM's published Sudoku-Extreme and
@@ -365,7 +422,7 @@ with no in-layer loop at all*.
   architectural comparison would mean anything. It is reported as out of budget
   rather than as a result.
 
-## 12. Reproducing
+## 13. Reproducing
 
 ```bash
 # mechanism experiments (minutes on CPU)

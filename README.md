@@ -21,20 +21,41 @@ with the looped-transformer recursion of
 truncated backpropagation-through-time with exact, constant-memory implicit
 differentiation.
 
-**Result.** On 7x7 maze planning at a forward budget of 32 (where the
-fixed-point residual actually falls below tolerance), FPRM's loop trained with
-the implicit gradient reaches **81.3 exact match at 57 MB and 0.34 s/step**,
-against **79.0 at 595 MB and 3.10 s/step** for the same loop fully unrolled with
-BPTT — equal or better accuracy at **10.5x less activation memory** and **9.1x
-less time per training step**. Truncated BPTT (FPRM as published) reaches 80.6
-at 108 MB.
+**Result.** On 7x7 maze planning at a forward budget of 32, dropping the
+per-layer spectral caps and targeting the spectral radius directly (rho ~= 1
+rather than safely below it), with Anderson acceleration for the forward solve
+and GMRES for the adjoint:
 
-**What did not work.** Adding FPSA's in-layer attention fixed point on top costs
-about ten points (71.9 vs 81.3) and hurts size generalisation. And removing the
-spectral normalisation that makes the equilibrium well-posed scores highest of
-anything in the study (92.7) — at a spectral radius of 1.85, i.e. with no fixed
-point at all. On this task the contractivity constraint, not the gradient, is
-the binding one. Both are reported in full rather than omitted.
+| Configuration | Exact match | -> 9x9 | -> 11x11 | Act. mem | s/step |
+| --- | --- | --- | --- | --- | --- |
+| **no caps + Anderson fwd + GMRES adj.** | **95.4 ± 1.0** | **79.9** | **53.5** | **55 MB** | 0.50 |
+| spectral caps + Picard + Anderson adj. | 81.4 ± 2.1 | 28.5 | 4.1 | 57 MB | 0.34 |
+| FPRM (truncated BPTT) | 80.6 ± 1.5 | 26.8 | 2.5 | 108 MB | 0.36 |
+| Looped Transformer (full BPTT) | 79.0 ± 1.0 | 29.5 | 4.9 | 595 MB | 3.10 |
+
+Every row trains at rho 0.63-0.69, so this is a comparison at matched
+contractivity. Against a fully-unrolled looped transformer that is **+16 points
+of exact match and an order of magnitude better extrapolation, at 1/10th the
+activation memory and 1/6th the time per step**.
+
+**The contractivity question.** The implicit gradient is only the gradient at an
+equilibrium, so the loop must contract -- and that requirement, not the gradient,
+is what costs accuracy. Two findings separate the concerns:
+
+- **rho < 1 is genuinely required.** Against exact BPTT the implicit gradient is
+  essentially exact at rho = 0.93 (cosine 0.999999) and *uninformative* at
+  rho = 1.13 (cosine -0.02). It does not degrade gracefully. Stronger solvers
+  will find fixed points past rho = 1, but the gradient there is still worthless.
+- **Per-layer spectral caps are not required.** At matched rho the gradient is
+  equally faithful with and without them. They are a conservative sufficient
+  condition for what the spectral-radius penalty already enforces directly, and
+  removing them is worth the 14 points above.
+
+**What did not work.** Adding FPSA's in-layer attention fixed point costs about
+ten points under the capped recipe. And an early no-caps run *without* a
+spectral-radius target reached rho = 1.85 with a diverging forward pass: it
+scored 92.7 but was a weight-tied deep network with an arbitrary gradient, not an
+equilibrium model. Both are reported in full rather than omitted.
 
 Mechanism results, which are properties of the differentiation scheme rather
 than the task:

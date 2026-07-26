@@ -373,7 +373,55 @@ with no in-layer loop at all*.
 
 {RANK_TABLE}
 
-## 11. Scope and honest limitations
+## 11. How to buy contractivity
+
+Sections 9-10 leave one question open, and it is the one that decides whether
+this architecture is worth building on. The implicit gradient is only the
+gradient at an equilibrium, so the loop has to contract; but the stabiliser that
+delivers contraction was also the single largest cost to accuracy. Is that
+trade-off intrinsic?
+
+**It is not, because two separate things were being conflated.**
+
+*Does the gradient need rho < 1?* Yes, and sharply. Measured against exact BPTT
+through 300 steps, the implicit gradient is essentially exact at rho = 0.93
+(cosine 0.999999) and **uninformative** at rho = 1.13 (cosine -0.02, relative
+error 40). It does not degrade gracefully: past rho = 1 the point the solver
+lands on is no longer the limit of the iteration, so the gradient describes a
+solution the forward pass never reaches. Stronger solvers do not rescue this.
+Anderson acceleration will happily *find* fixed points at rho > 1 (Section 8),
+and the gradient there is still worthless.
+
+{FAITH_TABLE}
+
+*Do we need per-layer spectral caps to get rho < 1?* No. At matched rho the
+gradient is equally faithful with the caps and without them, so the caps are a
+conservative sufficient condition for something the spectral-radius penalty
+already enforces directly -- and they cost a great deal of capacity. Replacing
+them with a rho target of 1.0, and using Anderson acceleration forward with a
+GMRES adjoint so that neither solver is the binding constraint:
+
+{CONTRACTION_TABLE}
+
+Every row sits at rho 0.63-0.69, so this is a comparison at matched
+contractivity rather than between a constrained and an unconstrained model.
+Removing the caps is worth **14 points of exact match** and roughly an order of
+magnitude in extrapolation to larger grids (53.5 against 4.1 at 11x11), at a
+tenth of the memory and a sixth of the step time of the fully-unrolled loop.
+
+The interaction is easy to miss: better solvers *alone* buy nothing (78-81 with
+the caps still on), and removing the caps alone diverges -- an earlier run
+without caps but with Picard and a 0.9 target ran to rho = 1.85 with a forward
+residual of 2-3, and scored well only in the sense that a weight-tied deep
+network with an arbitrary gradient can score well. Both changes are needed, and
+the rho target is what keeps the result honest.
+
+**The recipe.** Target the spectral radius directly, near 1 rather than safely
+below it; drop per-layer spectral caps; use Anderson acceleration for the
+forward solve and GMRES for the adjoint, so neither solver is what forces the
+constraint. Then verify by measuring rho, not by assuming it.
+
+## 12. Scope and honest limitations
 
 * **Scale.** Every number here was produced on 4 CPU cores. The models are
   ~0.2M parameters trained for ~10^3 steps. FPRM's published Sudoku-Extreme and
@@ -394,7 +442,7 @@ with no in-layer loop at all*.
   architectural comparison would mean anything. It is reported as out of budget
   rather than as a result.
 
-## 12. Reproducing
+## 13. Reproducing
 
 ```bash
 # mechanism experiments (minutes on CPU)
@@ -421,7 +469,10 @@ Code layout:
 | `experiments/reasoning/` | tasks, trainer, grid runner, mechanism suite, analysis |
 """)
 
-    text = "\n".join(parts).replace("{RANK_TABLE}", table("mech_rank_collapse"))
+    text = ("\n".join(parts)
+            .replace("{RANK_TABLE}", table("mech_rank_collapse"))
+            .replace("{FAITH_TABLE}", table("mech_gradient_faithfulness"))
+            .replace("{CONTRACTION_TABLE}", table("contraction_study")))
     with open(os.path.join(DOC, "FPSA-R.md"), "w") as f:
         f.write(text)
     print(f"wrote docs/FPSA-R.md ({len(text)} chars)")
