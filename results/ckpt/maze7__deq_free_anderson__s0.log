@@ -1,0 +1,2 @@
+[deq_free_anderson/maze/s0] step   250 loss 0.0655 tok 98.23 em 77.34 it 32.0
+[deq_free_anderson/maze/s0] step   500 loss 0.0549 tok 98.53 em 85.94 it 31.9

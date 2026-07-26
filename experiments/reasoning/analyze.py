@@ -793,6 +793,99 @@ def contraction_table():
                         "implicit gradient is faithful (see the faithfulness table).")
 
 
+def fig_sharpening(name="fig_attention_sharpening"):
+    """Iteration recovers sharpness a single softmax cannot express -- above a
+    critical gain -- and the destination is contractive even when the path is
+    not."""
+    d = mech("m10_attention_sharpening")
+    if not d:
+        return
+    fig, (ax, ax2, ax3) = plt.subplots(1, 3, figsize=(15.4, 3.9))
+    keys = list(d["curves"])
+    shades = plt.cm.RdBu_r([i / max(1, len(keys) - 1) for i in range(len(keys))])
+    for k, col in zip(keys, shades):
+        ys = d["curves"][k]
+        ax.plot(range(1, len(ys) + 1), ys, lw=2.0, color=col, label=k)
+    ax.axhline(d["uniform_entropy"], color="#888888", ls=":", lw=1.2)
+    ax.text(1.5, d["uniform_entropy"] * 0.985, r"uniform, $\log N$", fontsize=8,
+            color="#666666")
+    ax.set_xscale("log", base=2)
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{int(v)}"))
+    style(ax, title="Attention entropy from a near-uniform start",
+          xlabel="iteration", ylabel="entropy (nats)")
+    ax.legend(frameon=False, fontsize=7.5, ncol=2, labelcolor="#333333")
+
+    rows = d["rows"]
+    b = [r["beta"] for r in rows]
+    ax2.plot(b, [r["entropy_step1"] for r in rows], marker="o", ms=4, lw=1.6,
+             ls="--", color="#5C6B73", label="single pass")
+    ax2.plot(b, [r["entropy_fixed_point"] for r in rows], marker="o", ms=4,
+             lw=2.6, color=C["fpsa_r"], label="at the fixed point")
+    ax2.axhline(d["uniform_entropy"], color="#888888", ls=":", lw=1.2)
+    ax2.set_xscale("log", base=2)
+    ax2.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{v:g}"))
+    style(ax2, title="One pass cannot express what the loop reaches",
+          xlabel=r"inverse temperature $\beta$", ylabel="entropy (nats)")
+
+    ax3.plot(b, [r["rho_uniform"] for r in rows], marker="o", ms=4, lw=2.0,
+             color="#2E86AB", label=r"$\rho$ at the uniform state")
+    ax3.plot(b, [r["rho_fixed_point"] for r in rows], marker="o", ms=4, lw=2.6,
+             color=C["fpsa_r"], label=r"$\rho$ at the fixed point")
+    ax3.axhline(1.0, color="#D1495B", ls=":", lw=1.4)
+    ax3.text(b[0], 1.05, "escape requires > 1", fontsize=8, color="#D1495B")
+    ax3.set_xscale("log", base=2)
+    ax3.set_yscale("log")
+    ax3.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{v:g}"))
+    style(ax3, title="Expansive on the path, contractive at the destination",
+          xlabel=r"inverse temperature $\beta$", ylabel=r"spectral radius $\rho$")
+    save(fig, name)
+
+
+def table_sharpening():
+    d = mech("m10_attention_sharpening")
+    if not d:
+        return
+    rows = []
+    for r in d["rows"]:
+        sharp = r["entropy_step1"] - r["entropy_fixed_point"] > 0.05
+        star = "**" if sharp else ""
+        rows.append([f"{star}{r['beta']:g}{star}",
+                     f"{r['entropy_step1']:.3f}", f"{r['entropy_fixed_point']:.3f}",
+                     f"{r['eff_support_step1']:.1f}", f"{r['eff_support_fixed_point']:.2f}",
+                     f"{r['rho_uniform']:.3f}", f"{r['rho_fixed_point']:.3f}",
+                     f"{r['iters_to_converge']:.0f}"])
+    write_table("mech_attention_sharpening",
+                ["beta", "H (1 pass)", "H (fixed pt)", "eff. keys (1 pass)",
+                 "eff. keys (fixed pt)", "rho @ uniform", "rho @ fixed pt",
+                 "iters"], rows,
+                caption=f"Iterated attention u <- X^T softmax(beta X u) from a "
+                        f"near-uniform start, N={d['N']} keys (uniform entropy "
+                        f"{d['uniform_entropy']:.3f}), mean over {d['n_seeds']} "
+                        f"draws. Bold rows sharpen. Note the two spectral radii: "
+                        f"escaping the uniform state needs rho > 1 there, while "
+                        f"the sharp fixed point the iteration lands on is strongly "
+                        f"contractive, because the softmax Jacobian "
+                        f"diag(a) - a a^T vanishes as a approaches one-hot.")
+
+
+def table_architecture_sharpening():
+    d = mech("m11_architecture_sharpening")
+    if not d or not d.get("models"):
+        return
+    rows = []
+    for tag, v in sorted(d["models"].items()):
+        rows.append([tag, f"{v['entropy_step1']:.3f}", f"{v['entropy_fixed_point']:.3f}",
+                     f"{v['eff_support_step1']:.1f}", f"{v['eff_support_fixed_point']:.1f}",
+                     f"{v['sharpening']:+.3f}"])
+    write_table("mech_architecture_sharpening",
+                ["checkpoint", "H (iter 1)", "H (fixed pt)", "eff. keys (iter 1)",
+                 "eff. keys (fixed pt)", "sharpening"], rows,
+                caption=f"Attention entropy inside the trained block, "
+                        f"{d['n_tokens']} tokens (uniform entropy "
+                        f"{d['uniform_entropy']:.3f}). Positive sharpening means "
+                        f"the loop ends sharper than its first pass.")
+
+
 def fig_architecture(name="fig_architecture"):
     """Schematic of where the loop sits in each family of model."""
     panels = [
@@ -855,6 +948,9 @@ def main():
     fig_solver_range()
     fig_faithfulness()
     contraction_table()
+    fig_sharpening()
+    table_sharpening()
+    table_architecture_sharpening()
     table_faithfulness()
     table_solver_range()
     fig_adjoint()

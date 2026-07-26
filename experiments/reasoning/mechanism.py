@@ -13,6 +13,7 @@ tables and figures.
 """
 
 import argparse
+import glob
 import json
 import os
 import sys
@@ -575,6 +576,197 @@ def m9_gradient_faithfulness_vs_rho(alphas=(0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9),
             "reference": f"exact BPTT through {ref_iters} steps", "results": out}
 
 
+def _attention_stats(m, X, n_iter, tau_scale=1.0, layer=0):
+    """Attention entropy / peak weight / effective support at every iteration.
+
+    Returns per-iteration dicts. Entropy is in nats over the key axis, averaged
+    over queries, heads and batch; ``effective support`` is exp(H), i.e. the
+    number of keys the row behaves as if it were averaging over.
+    """
+    import math as _m
+    attn = m.block.layers[layer].attn
+    xin = m._inputs(X, None)
+    si = m._seq_info(xin.shape[1])
+    cos_sin = si["cos_sin"]
+    with torch.no_grad():
+        old = attn.log_tau.detach().clone()
+        attn.log_tau.copy_(old + _m.log(tau_scale))
+        try:
+            s = m.block.init_state(X.shape[0], xin.shape[1], xin.device, xin.dtype)
+            out = []
+            for k in range(n_iter):
+                s = s + (m.block.joint_step(s, xin, si) - s)
+                # recompute the alignment the layer would use at this state
+                h = s[0]
+                a1, a2, b1, b2 = m.block._scales(h)
+                hh = m.block.conv(a2 * h + b2 * xin, si.get("prefix_len", 0))
+                from src.fpsa_r.layers import apply_rotary, rms_norm
+                xa = rms_norm(hh, m.cfg.rms_norm_eps)
+                u = s[1] if m.cfg.fpsa and s.shape[0] > 1 else xa
+                q = attn._split(attn.W_Q(u))
+                kk = attn._split(attn.W_K(u))
+                q, kk = apply_rotary(q, kk, cos_sin)
+                tau = attn.log_tau.exp().clamp(min=1e-2).view(1, -1, 1, 1)
+                sc = torch.matmul(q, kk.transpose(-2, -1)) / (
+                    _m.sqrt(attn.head_dim) * tau)
+                A = torch.softmax(sc, dim=-1)
+                H = -(A.clamp_min(1e-12).log() * A).sum(-1)          # (B,H,N)
+                out.append({"iter": k + 1,
+                            "entropy": float(H.mean()),
+                            "eff_support": float(H.mean().exp()),
+                            "max_weight": float(A.amax(-1).mean()),
+                            "top1_frac": float((A.argmax(-1) == A.argmax(-1)).float().mean())})
+        finally:
+            attn.log_tau.copy_(old)
+    return out
+
+
+def m10_attention_sharpening(betas=(2.0, 6.0, 8.0, 10.0, 12.0, 16.0, 24.0, 32.0),
+                             N=48, D=64, n_iter=128, n_seeds=4):
+    """Can iteration recover sharpness that a single softmax cannot express?
+
+    A softmax row is an averaging operator, and at high temperature a single
+    pass is arbitrarily close to uniform. The natural conclusion is that
+    attention can only smooth. That conclusion is wrong, and the reason is that
+    the loop recomputes the alignment from the evolving state rather than
+    reapplying a fixed one.
+
+    Strip the architecture back to the dynamic it contains -- the modern
+    Hopfield update of Ramsauer et al., ``u <- X^T softmax(beta X u)``, which is
+    iterated attention with keys = values = X. Starting from a near-uniform
+    state:
+
+    * Below a critical gain the uniform state is *stable*: iterating does
+      nothing, or smooths further. No amount of extra compute buys sharpness.
+    * Above it the uniform state is *repelling*. Whatever asymmetry exists gets
+      amplified geometrically, and the iteration lands on a near-one-hot
+      retrieval -- sharpness that the single pass genuinely could not express,
+      since at the same beta one step leaves entropy within 1% of log N.
+
+    The second measurement is the one that matters for this repository. We take
+    the spectral radius at the uniform state and at the fixed point separately.
+    They are wildly different, because softmax saturates: the Jacobian of
+    softmax is ``diag(a) - a a^T``, which vanishes as ``a`` approaches one-hot.
+    So the sharpening regime is expansive *on the way* and strongly contractive
+    *at the destination*.
+
+    That resolves what looks like a contradiction with the rest of this work.
+    Implicit differentiation needs rho < 1 where the solver lands, not along the
+    path it took. A penalty on the spectral radius measured *at the solution* --
+    which is what ``_contraction_penalty`` computes -- permits the sharpening
+    transient while keeping the gradient valid. Per-layer spectral caps do not:
+    they bound the Jacobian everywhere, including at the smooth state the
+    iteration has to escape from, which forbids sharpening outright.
+    """
+    import math as _m
+    log_n = _m.log(N)
+
+    def rho_at(X, u, beta, n=40):
+        v = torch.randn(D)
+        v = v / v.norm()
+        r = 0.0
+        uu = u.detach().clone().requires_grad_(True)
+        a = torch.softmax(beta * (X @ uu), 0)
+        f = X.t() @ a
+        for _ in range(n):
+            (jv,) = torch.autograd.grad(f, uu, v, retain_graph=True)
+            nrm = jv.norm()
+            if nrm < 1e-14:
+                return 0.0
+            v = jv / nrm
+            r = float(nrm)
+        return r
+
+    rows, curves = [], {}
+    for beta in betas:
+        ent, rho_u, rho_f, iters = [], [], [], []
+        traj = []
+        for s in range(n_seeds):
+            torch.manual_seed(s)
+            X = torch.randn(N, D) / _m.sqrt(D)
+            u_unif = X.mean(0)
+            rho_u.append(rho_at(X, u_unif, beta))
+            u = u_unif + 0.01 * torch.randn(D) / _m.sqrt(D)
+            hs, prev, k = [], None, 0
+            for k in range(n_iter):
+                a = torch.softmax(beta * (X @ u), 0)
+                hs.append(float(-(a.clamp_min(1e-12).log() * a).sum()))
+                un = X.t() @ a
+                if prev is not None and float((un - u).norm()) < 1e-9:
+                    u = un
+                    break
+                prev, u = u, un
+            hs += [hs[-1]] * (n_iter - len(hs))
+            traj.append(hs)
+            iters.append(k + 1)
+            rho_f.append(rho_at(X, u, beta))
+            ent.append(hs[-1])
+        avg = lambda v: sum(v) / len(v)
+        curves[f"beta={beta:g}"] = [avg([t[i] for t in traj]) for i in range(n_iter)]
+        rows.append({"beta": beta,
+                     "entropy_step1": avg([t[0] for t in traj]),
+                     "entropy_fixed_point": avg(ent),
+                     "eff_support_step1": _m.exp(avg([t[0] for t in traj])),
+                     "eff_support_fixed_point": _m.exp(avg(ent)),
+                     "rho_uniform": avg(rho_u),
+                     "rho_fixed_point": avg(rho_f),
+                     "iters_to_converge": avg(iters)})
+    return {"N": N, "D": D, "uniform_entropy": log_n, "n_seeds": n_seeds,
+            "n_iter": n_iter, "rows": rows, "curves": curves}
+
+
+def m11_architecture_sharpening(ckpt_dir=None, n_iter=32):
+    """The same question inside the trained architecture.
+
+    Measures the attention entropy the block actually uses at iteration 1
+    (which is what a single-pass transformer would compute) against the entropy
+    at the fixed point, for each available checkpoint. If the loop sharpens, the
+    fixed-point entropy is lower.
+    """
+    import math as _m
+    from src.fpsa_r.config import FPSARConfig
+    from src.fpsa_r.layers import rms_norm
+    from src.fpsa_r.model import FPSAReasoner
+
+    ckpt_dir = ckpt_dir or os.path.join(os.path.dirname(OUT), "ckpt")
+    t = _task(name="maze", n=64, size=7)
+    X = t.train.x[:8]
+    out = {"n_tokens": t.seq_len, "uniform_entropy": _m.log(t.seq_len), "models": {}}
+    for p in sorted(glob.glob(os.path.join(ckpt_dir, "*.pt"))):
+        blob = torch.load(p, weights_only=False)
+        m = FPSAReasoner(FPSARConfig(**blob["cfg"]))
+        m.load_state_dict(blob["state_dict"])
+        m.eval()
+        attn = m.block.layers[0].attn
+        xin = m._inputs(X, None)
+        si = m._seq_info(xin.shape[1])
+        hs = []
+        with torch.no_grad():
+            s = m.block.init_state(X.shape[0], xin.shape[1], xin.device, xin.dtype)
+            for _ in range(n_iter):
+                s = s + (m.block.joint_step(s, xin, si) - s)
+                a1, a2, b1, b2 = m.block._scales(s[0])
+                hh = m.block.conv(a2 * s[0] + b2 * xin, si.get("prefix_len", 0))
+                xa = rms_norm(hh, m.cfg.rms_norm_eps)
+                u = s[1] if (m.cfg.fpsa and s.shape[0] > 1) else xa
+                from src.fpsa_r.layers import apply_rotary
+                q = attn._split(attn.W_Q(u))
+                k = attn._split(attn.W_K(u))
+                q, k = apply_rotary(q, k, si["cos_sin"])
+                tau = attn.log_tau.exp().clamp(min=1e-2).view(1, -1, 1, 1)
+                sc = torch.matmul(q, k.transpose(-2, -1)) / (_m.sqrt(attn.head_dim) * tau)
+                a = torch.softmax(sc, -1)
+                hs.append(float(-(a.clamp_min(1e-12).log() * a).sum(-1).mean()))
+        tag = os.path.basename(p).split("__")[1]
+        out["models"][tag] = {"entropy_per_iter": hs,
+                              "entropy_step1": hs[0],
+                              "entropy_fixed_point": hs[-1],
+                              "eff_support_step1": _m.exp(hs[0]),
+                              "eff_support_fixed_point": _m.exp(hs[-1]),
+                              "sharpening": hs[0] - hs[-1]}
+    return out
+
+
 EXPERIMENTS = {
     "m1_gradient_fidelity": m1_gradient_fidelity,
     "m1b_fidelity_vs_contraction": m1b_fidelity_vs_contraction,
@@ -587,6 +779,8 @@ EXPERIMENTS = {
     "m7_rank_collapse": m7_rank_collapse,
     "m8_solver_range": m8_solver_range,
     "m9_gradient_faithfulness_vs_rho": m9_gradient_faithfulness_vs_rho,
+    "m10_attention_sharpening": m10_attention_sharpening,
+    "m11_architecture_sharpening": m11_architecture_sharpening,
 }
 
 

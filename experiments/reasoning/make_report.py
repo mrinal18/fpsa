@@ -431,7 +431,89 @@ below it; drop per-layer spectral caps; use Anderson acceleration for the
 forward solve and GMRES for the adjoint, so neither solver is what forces the
 constraint. Then verify by measuring rho, not by assuming it.
 
-## 12. Scope and honest limitations
+## 12. Why iterate attention at all? Sharpness
+
+A softmax row is an averaging operator. Raise the temperature and a single pass
+gets arbitrarily close to uniform: at ``tau -> inf`` the layer returns the mean
+of ``V`` whatever the query asked for. The natural conclusion is that softmax
+attention can only smooth, and that iterating it can only smooth harder --
+repeated application of a *fixed* row-stochastic matrix does converge to its
+stationary distribution, which is the rank-collapse result.
+
+That conclusion does not apply here, and the reason is precise: the loop
+**recomputes** the alignment from the evolving state instead of reapplying a
+fixed one. Write the inner map with keys and values tied, which is iterated
+attention stripped to its core:
+
+```
+u  <-  X^T softmax(beta X u)
+```
+
+This is exactly the modern Hopfield retrieval dynamic of Ramsauer et al., whose
+fixed points come in three kinds: the global average over all keys, metastable
+superpositions over subsets, and sharp single-key retrievals. Which one you land
+on is set by the gain, and the mechanism is positive feedback: if token ``i``
+attends slightly more to ``j``, then ``u_i`` moves toward ``V_j``, so at the next
+iteration ``q_i`` aligns *more* with ``k_j`` and the logit gap widens. A single
+pass has no such feedback term.
+
+Starting from a near-uniform state and iterating:
+
+{SHARPEN_TABLE}
+
+Below a critical gain the uniform state is **stable** -- iterating does nothing,
+and no amount of extra test-time compute buys sharpness. Above it the uniform
+state is **repelling**, the asymmetry is amplified geometrically, and the
+iteration lands on a near-one-hot retrieval. At ``beta = 16`` a single pass
+leaves entropy at 3.835 against a uniform value of 3.871 -- it is attending to
+an effective 46 of 48 keys, visually indistinguishable from uniform -- while the
+fixed point attends to **exactly one**. That sharpness is not recoverable by any
+single application of softmax at that temperature. It exists only as a property
+of the loop.
+
+{fig('fig_attention_sharpening', 'Left: entropy against iteration from a near-uniform start; below the critical gain nothing happens, above it entropy collapses. Middle: a single pass stays near uniform at every temperature while the fixed point collapses past the transition. Right: the two spectral radii -- escaping the uniform state requires rho > 1 there, while the sharp fixed point is strongly contractive.')}
+
+### 12.1 This does not contradict needing rho < 1
+
+The right-hand panel is the one that matters for the rest of this work, because
+sharpening appears to require exactly what Section 11 forbids. It does not, and
+the resolution is that **the two spectral radii are measured at different
+points**:
+
+| beta = 16 | spectral radius |
+| --- | --- |
+| at the near-uniform state the iteration starts from | **1.18** (repelling -- this is what lets it escape) |
+| at the sharp fixed point the iteration lands on | **0.002** (strongly contractive) |
+
+Softmax saturates. Its Jacobian is ``diag(a) - a a^T``, which vanishes as ``a``
+approaches one-hot, so a sharp fixed point is not merely contractive but
+*super*-contractive -- at ``beta = 32`` the radius at the solution is around
+``1e-6``. The sharpening regime is expansive **on the path** and contractive
+**at the destination**.
+
+Implicit differentiation only ever needs ``rho < 1`` where the solver lands. It
+places no requirement on the trajectory. So a penalty on the spectral radius
+measured *at the solution* -- which is what this implementation computes -- is
+compatible with the sharpening dynamic: it permits the escape and constrains only
+the destination.
+
+Hard per-layer spectral caps are not. Bounding every projection bounds the
+Jacobian *everywhere*, including at the smooth state the iteration would have to
+escape from, which rules out the transition outright. That is a concrete
+mechanism for the 14-point gap in Section 11: the caps were not merely
+conservative about contraction, they were forbidding the one thing iterating
+attention is uniquely able to do.
+
+### 12.2 In the trained architecture
+
+{ARCH_SHARPEN_TABLE}
+
+The Hopfield analysis above is the mechanism in isolation, with keys tied to
+values and a scalar gain. Whether a trained block operates above or below its
+critical gain is an empirical question and the table reports it directly rather
+than assuming the favourable answer.
+
+## 13. Scope and honest limitations
 
 * **Scale.** Every number here was produced on 4 CPU cores. The models are
   ~0.2M parameters trained for ~10^3 steps. FPRM's published Sudoku-Extreme and
@@ -452,7 +534,7 @@ constraint. Then verify by measuring rho, not by assuming it.
   architectural comparison would mean anything. It is reported as out of budget
   rather than as a result.
 
-## 13. Reproducing
+## 14. Reproducing
 
 ```bash
 # mechanism experiments (minutes on CPU)
@@ -482,7 +564,11 @@ Code layout:
     text = ("\n".join(parts)
             .replace("{RANK_TABLE}", table("mech_rank_collapse"))
             .replace("{FAITH_TABLE}", table("mech_gradient_faithfulness"))
-            .replace("{CONTRACTION_TABLE}", table("contraction_study")))
+            .replace("{CONTRACTION_TABLE}", table("contraction_study"))
+            .replace("{SHARPEN_TABLE}", table("mech_attention_sharpening"))
+            .replace("{ARCH_SHARPEN_TABLE}",
+                     table("mech_architecture_sharpening",
+                           "_(checkpoints still training)_")))
     with open(os.path.join(DOC, "FPSA-R.md"), "w") as f:
         f.write(text)
     print(f"wrote docs/FPSA-R.md ({len(text)} chars)")

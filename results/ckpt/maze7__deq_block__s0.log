@@ -1,0 +1,3 @@
+[deq_block/maze/s0] step   250 loss 0.1540 tok 93.41 em 21.88 it 15.0
+[deq_block/maze/s0] step   500 loss 0.0669 tok 96.46 em 46.48 it 32.0
+[deq_block/maze/s0] step   750 loss 0.0409 tok 97.74 em 70.31 it 32.0

@@ -232,6 +232,9 @@ def run(args) -> Dict:
         "config": model.cfg.to_dict(),
         "args": vars(args),
     }
+    if args.out and args.save_model:
+        torch.save({"cfg": model.cfg.to_dict(), "state_dict": model.state_dict()},
+                   args.out.replace(".json", ".pt"))
     if args.out:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
         with open(args.out, "w") as f:
@@ -279,6 +282,8 @@ def build_parser():
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--out", default="")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--save_model", action="store_true",
+                   help="checkpoint next to --out, for post-hoc analysis")
     return p
 
 
