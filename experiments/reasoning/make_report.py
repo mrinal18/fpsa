@@ -68,6 +68,33 @@ def headline_numbers():
     return n
 
 
+def converged_headline():
+    conv = load_runs(os.path.join(RES, "converged", "*.json"))
+    base = load_runs(os.path.join(RES, "runs", "*.json"))
+    n = {}
+    if not conv:
+        return n
+    def em(d, a):
+        rs = d.get(("maze", a))
+        return st.mean([r["final"]["exact_match"] for r in rs]) if rs else None
+    def mem(d, a):
+        rs = d.get(("maze", a))
+        return st.mean([r["activation_mb"] for r in rs]) if rs else None
+    def stp(d, a):
+        rs = d.get(("maze", a))
+        return st.mean([r["step_time_s"] for r in rs]) if rs else None
+    for k, a in (("ours", "deq_block"), ("fprm", "fprm"),
+                 ("bptt", "looped_bptt"), ("fpsar", "fpsa_r")):
+        n[f"em_{k}"] = em(conv, a)
+        n[f"mem_{k}"] = mem(conv, a)
+        n[f"t_{k}"] = stp(conv, a)
+        n[f"em8_{k}"] = em(base, a)
+    if n.get("mem_ours") and n.get("mem_bptt"):
+        n["mem_x"] = n["mem_bptt"] / n["mem_ours"]
+        n["t_x"] = n["t_bptt"] / n["t_ours"]
+    return n
+
+
 def load_runs(pattern):
     runs = defaultdict(list)
     for p in sorted(glob.glob(pattern)):
@@ -79,55 +106,51 @@ def load_runs(pattern):
     return runs
 
 
-def task_headline():
-    runs = load_runs(os.path.join(RES, "runs", "*.json"))
-    out = {}
-    for task in sorted({t for t, _ in runs}):
-        scores = {a: st.mean([r["final"]["exact_match"] for r in rs])
-                  for (t, a), rs in runs.items() if t == task}
-        if "fpsa_r" not in scores:
-            continue
-        others = {k: v for k, v in scores.items() if k != "fpsa_r"}
-        if not others:
-            continue
-        best_other = max(others, key=others.get)
-        out[task] = {"ours": scores["fpsa_r"], "best_other": best_other,
-                     "best_other_score": others[best_other],
-                     "delta": scores["fpsa_r"] - others[best_other],
-                     "all": scores}
-    return out
-
-
 def main():
     os.makedirs(DOC, exist_ok=True)
     n = headline_numbers()
-    th = task_headline()
+    n.update({k: v for k, v in converged_headline().items() if v is not None})
 
     def q(key, fmt="{:.2f}", missing="—"):
         return fmt.format(n[key]) if key in n else missing
 
     parts = []
-    parts.append(f"""# FPSA-R: Fixed-Point Self-Attention Reasoners
+    parts.append(f"""# FPSA-R: implicit differentiation for looped reasoning transformers
 
-**In-layer attention fixed points inside a looped reasoning recursion, lifted to
-a single joint equilibrium and trained with O(1)-memory implicit
-differentiation.**
+**What this is.** FPRM shows that a looped transformer driven to a fixed point
+is a strong reasoner, but trains it by backpropagating through the last
+`n_backwards_L` unrolled steps, so its memory -- and therefore the reasoning
+depth it can afford -- is bounded by that truncation. FPSA shows that iterating
+*inside* attention is a cheaper place to put the loop, but differentiates it
+with a single phantom-gradient step. This work replaces the gradient with an
+exact, constant-memory implicit one, and tests whether the in-layer loop helps
+on top.
 
-FPSA-R combines two lines of work that have so far stayed separate:
+**The headline, measured.** On 7x7 maze planning at a forward budget of 32 --
+the budget at which the fixed-point residual actually falls below tolerance --
+FPRM's loop trained with our implicit gradient reaches
+**{q('em_ours', '{:.1f}')} exact match at {q('mem_ours', '{:.0f}')} MB of
+activation memory and {q('t_ours', '{:.2f}')} s/step**, against
+**{q('em_bptt', '{:.1f}')} at {q('mem_bptt', '{:.0f}')} MB and
+{q('t_bptt', '{:.2f}')} s/step** for the same loop fully unrolled with BPTT:
+equal or better accuracy for **{q('mem_x', '{:.1f}')}x less memory** and
+**{q('t_x', '{:.1f}')}x less time per step**. Truncated BPTT (FPRM as
+published) lands at {q('em_fprm', '{:.1f}')} using
+{q('mem_fprm', '{:.0f}')} MB.
+
+**The headline, honestly.** Adding FPSA's in-layer attention fixed point on top
+does *not* help on this task: {q('em_fpsar', '{:.1f}')} against
+{q('em_ours', '{:.1f}')} without it. The win here belongs to the gradient, not
+to the extra loop. Section 9 reports this in full, including an ablation in
+which *removing* the spectral normalisation that makes the equilibrium
+well-posed scores highest of anything we ran -- at a spectral radius of 1.85,
+i.e. with no fixed point at all.
 
 | | loop location | gradient | memory in loop depth |
 | --- | --- | --- | --- |
 | **FPSA** (*Closing the Loop with Fixed-Point Self-Attention*) | inside attention | 1-step phantom gradient | O(1) |
 | **FPRM** (*Fixed-Point Reasoners*) | whole transformer block | truncated BPTT (`n_backwards_L`) | O(K) |
-| **FPSA-R** (this work) | **both, as one joint equilibrium** | **Anderson-accelerated masked adjoint** | **O(1)** |
-
-FPRM showed that a looped transformer driven to a fixed point is a strong
-reasoner, but trains it by backpropagating through the last `n_backwards_L`
-unrolled steps — so its activation memory, and therefore the depth of reasoning
-it can afford, is bounded by the truncation length. FPSA showed that iterating
-*inside* attention is a cheaper place to put the loop, but differentiates it
-with a single phantom-gradient step. FPSA-R puts the loop in both places and
-differentiates the whole thing exactly, at constant memory.
+| **this work** | either, as one joint equilibrium | Anderson-accelerated masked adjoint | **O(1)** |
 
 ---
 
@@ -261,43 +284,81 @@ solving the inner FPSA loop nested inside each outer step.
     task_files = sorted(glob.glob(os.path.join(TAB, "main_*.md")))
     if task_files:
         body = "\n".join(open(f).read() for f in task_files)
-        summary = ""
-        for task, d in th.items():
-            sign = "+" if d["delta"] >= 0 else ""
-            summary += (f"- **{task}**: FPSA-R {d['ours']:.1f}% exact match vs "
-                        f"{d['best_other_score']:.1f}% for the best baseline "
-                        f"({d['best_other']}), {sign}{d['delta']:.1f} pp.\n")
         parts.append(f"""
 ## 9. Reasoning benchmarks
 
-All architectures are the same module with different switches — width, depth and
-parameter count are matched by construction, and every run goes through the same
-trainer, schedule and seeds.
+All architectures are the same module under different switches, so width, depth
+and parameter count are matched by construction and every run goes through the
+same trainer, schedule and seeds. The task is shortest-path planning on a 7x7
+grid, scored by exact match on the whole grid; held-out 9x9 and 11x11 grids test
+whether test-time iteration buys generalisation to larger problems.
 
-{summary}
+That the task rewards recurrent depth at all is worth establishing before
+comparing recurrent models on it. It does: the non-recursive depth-matched
+transformer is competitive at the size it trained on and then collapses
+off-distribution, from {q('em8_bptt', '{:.0f}')}-ish at 7x7 to 2.6 at 9x9 and
+0.0 at 11x11, while the looped transformer holds 30.2 and 4.4.
+
+### 9.1 At the training budget (T=8)
+
 {body}
 
-{fig('fig_task_accuracy', 'Exact-match accuracy. Error bars are sd over seeds.')}
+At this budget the fixed-point models are handicapped, and not by accident: every
+trained model sits at a spectral radius of 0.87-0.97, so after 8 iterations the
+forward residual is still around 0.1 and the loop is nowhere near the fixed point
+whose gradient implicit differentiation returns. Truncated and full BPTT have no
+such precondition -- they differentiate exactly the steps that ran.
 
-{fig('fig_test_time_scaling', 'Accuracy as a function of the test-time iteration budget, for models all trained with a budget of 8.')}
+### 9.2 At a budget where the equilibrium premise holds (T=32)
 
-{fig('fig_learning_curves', 'Learning curves.')}
+{table('converged_forward')}
 
-{fig('fig_generalization', 'Held-out instances harder than anything seen in training.')}
+{fig('fig_converged_forward', 'Accuracy against the activation memory it costs, at a matched forward depth of 32.')}
 
-### 9.1 The matched-memory comparison
+This is the result the method exists for. Given a forward pass that actually
+converges, the implicit gradient matches a fully-unrolled loop's accuracy at
+{q('mem_x', '{:.1f}')}x less memory and {q('t_x', '{:.1f}')}x less time per
+step, and beats truncated BPTT at half its memory. Note also which model *moves*
+between the two budgets: BPTT is flat ({q('em8_bptt', '{:.1f}')} to
+{q('em_bptt', '{:.1f}')}) because it was already differentiating what it
+computed, while the implicit models gain {q('em8_ours', '{:.1f}')} to
+{q('em_ours', '{:.1f}')} once their premise is satisfied.
 
-Comparing at equal *iteration count* understates the method. The point of an
-O(1) backward is that iterations stop costing memory, so the fair practical
-question is what each model can do at equal memory:
+### 9.3 What did not work
 
-{table('matched_memory')}
+Adding FPSA's in-layer attention fixed point costs about ten points at both
+budgets ({q('em_fpsar', '{:.1f}')} vs {q('em_ours', '{:.1f}')} at T=32) and
+hurts size generalisation badly (10.4 vs 28.5 at 9x9). The joint two-level
+equilibrium is sound -- the solvers agree to 1e-4, and it reaches the same fixed
+point with half the attention calls of nesting -- but on this task the second
+loop buys nothing and spends contraction budget that the outer loop would
+otherwise use. We report it as a negative result rather than bury it; whether it
+pays off on tasks where token-to-token alignment is the bottleneck (the language
+and vision settings FPSA was designed for) is untested here.
+
+{fig('fig_task_accuracy', 'Exact-match accuracy at T=8. Error bars are sd over seeds.')}
+
+{fig('fig_test_time_scaling', 'Accuracy as a function of the test-time iteration budget, for models trained with a budget of 8.')}
+
+{fig('fig_generalization', 'Held-out grids larger than anything seen in training.')}
 """)
 
     abl_files = sorted(glob.glob(os.path.join(TAB, "ablation_*.md")))
     if abl_files:
         parts.append("## 10. Ablations\n\n" +
-                     "\n".join(open(f).read() for f in abl_files) + "\n")
+                     "\n".join(open(f).read() for f in abl_files) + """
+
+The uncomfortable row is the last stabiliser. Removing spectral normalisation
+scores highest of anything in this study -- 92.7 exact match, and 45.3 on 11x11
+grids where every other model is under 6 -- at a measured spectral radius of
+1.85. There is no fixed point at that radius, so the adjoint solve has no
+justification and the model is simply a weight-tied deep network with an unusual
+gradient. Taken together with 9.3, the honest reading is that on this task the
+constraint required to make implicit differentiation *valid* is itself the main
+thing costing accuracy, and the method's benefit is memory and step time rather
+than raw quality. Anyone building on this should treat the contractivity budget,
+not the gradient, as the binding constraint.
+""")
 
     parts.append("""
 ## 10.1 Why the in-loop residual is not optional

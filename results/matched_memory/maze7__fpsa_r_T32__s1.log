@@ -1,0 +1,18 @@
+[fpsa_r/maze/s1] step   250 loss 0.1218 tok 94.50 em 30.27 it 29.7
+[fpsa_r/maze/s1] step   500 loss 0.0814 tok 96.44 em 49.22 it 32.0
+[fpsa_r/maze/s1] step   750 loss 0.0506 tok 97.10 em 59.77 it 32.0
+[fpsa_r/maze/s1] step  1000 loss 0.0299 tok 97.84 em 69.34 it 32.0
+{
+ "arch": "fpsa_r",
+ "task": "maze",
+ "seed": 1,
+ "params": 135558,
+ "activation_mb": 60.46429443359375,
+ "step_time_s": 0.5281851291656494,
+ "final": {
+  "token_acc": 97.83960459183673,
+  "exact_match": 69.3359375,
+  "mean_iters": 32.0,
+  "mean_residual": 0.033742868166882545
+ }
+}

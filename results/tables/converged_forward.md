@@ -1,0 +1,8 @@
+**maze7 trained at a forward budget of 32, where the fixed-point residual actually falls below tolerance. 'mem saving' is relative to the fully-unrolled looped transformer at the same depth.**
+
+| Model | EM @ T=8 | EM @ T=32 | -> 9x9 @ T=32 | Act. mem (MB) | mem saving | s / step | seeds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **FPRM loop + implicit gradient (ours)** | 75.8 | 81.35 ± 2.07 | 28.5 | 57 | 10.4x | 0.34 | 2 |
+| FPRM (truncated BPTT) | 53.3 | 80.57 ± 1.52 | 26.8 | 108 | 5.5x | 0.36 | 2 |
+| Looped Transformer (BPTT) | 78.9 | 79.00 ± 0.97 | 29.5 | 595 | 1.0x | 3.10 | 2 |
+| FPSA-R (+ in-layer FPSA) | 63.5 | 71.88 ± 3.59 | 10.4 | 60 | 9.9x | 0.46 | 2 |

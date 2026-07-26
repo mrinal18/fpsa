@@ -1,0 +1,18 @@
+[fprm/maze/s1] step   250 loss 0.1638 tok 93.96 em 18.95 it 19.4
+[fprm/maze/s1] step   500 loss 0.0763 tok 96.89 em 57.42 it 32.0
+[fprm/maze/s1] step   750 loss 0.0304 tok 98.01 em 74.02 it 32.0
+[fprm/maze/s1] step  1000 loss 0.0232 tok 98.12 em 79.49 it 32.0
+{
+ "arch": "fprm",
+ "task": "maze",
+ "seed": 1,
+ "params": 135558,
+ "activation_mb": 108.01719665527344,
+ "step_time_s": 0.35017840067545575,
+ "final": {
+  "token_acc": 98.12260841836735,
+  "exact_match": 79.4921875,
+  "mean_iters": 32.0,
+  "mean_residual": 0.12534057529410347
+ }
+}

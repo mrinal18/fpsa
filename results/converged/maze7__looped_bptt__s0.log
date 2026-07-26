@@ -1,0 +1,18 @@
+[looped_bptt/maze/s0] step   250 loss 0.1492 tok 93.75 em 20.31 it 14.6
+[looped_bptt/maze/s0] step   500 loss 0.0730 tok 97.08 em 53.91 it 32.0
+[looped_bptt/maze/s0] step   750 loss 0.0331 tok 98.15 em 72.85 it 32.0
+[looped_bptt/maze/s0] step  1000 loss 0.0401 tok 98.60 em 79.69 it 32.0
+{
+ "arch": "looped_bptt",
+ "task": "maze",
+ "seed": 0,
+ "params": 135558,
+ "activation_mb": 594.7611541748047,
+ "step_time_s": 2.17267115910848,
+ "final": {
+  "token_acc": 98.60491071428571,
+  "exact_match": 79.6875,
+  "mean_iters": 32.0,
+  "mean_residual": 0.09431514382595196
+ }
+}

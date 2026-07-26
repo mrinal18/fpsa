@@ -41,15 +41,15 @@ C = {
     "transformer": "#B0B0B0",
 }
 LABEL = {
-    "fpsa_r": "FPSA-R (ours)",
+    "fpsa_r": "FPSA-R (+ in-layer FPSA)",
     "fpsa_r_nested": "FPSA-R, nested solver",
     "fpsa_r_bptt": "FPSA-R, BPTT",
     "fpsa_r_onestep": "FPSA-R, 1-step phantom",
     "fpsa_r_nomask": "FPSA-R, unmasked adjoint",
     "fpsa_r_neumann": "FPSA-R, Neumann adjoint",
     "fpsa_r_nospec": "FPSA-R, no spectral norm",
-    "deq_block": "DEQ block (no in-layer FPSA)",
-    "fprm": "FPRM (trunc. BPTT)",
+    "deq_block": "FPRM loop + implicit gradient (ours)",
+    "fprm": "FPRM (truncated BPTT)",
     "looped_bptt": "Looped Transformer (BPTT)",
     "ut_act": "Universal Transformer + ACT",
     "transformer": "Transformer (non-recursive)",
@@ -109,6 +109,8 @@ def write_table(name, header, rows, caption=""):
 
 
 def mean_sd(xs):
+    """Mean and sd, ignoring NaN (a diverged seed contributes no rho)."""
+    xs = [x for x in xs if x is not None and x == x]
     if not xs:
         return float("nan"), 0.0
     return st.mean(xs), (st.stdev(xs) if len(xs) > 1 else 0.0)
@@ -582,33 +584,74 @@ def table_rank_collapse():
                         f"the fixed point loses {100*(1-bm/am):.0f}% of its effective rank.")
 
 
-def matched_memory(runs):
-    """The practical payoff: at *less* activation memory than FPRM's truncated
-    BPTT uses at 8 iterations, the O(1) backward lets FPSA-R run 32."""
-    mm = load_runs(os.path.join(RES, "converged", "*.json"))
-    if not mm or not runs:
+def converged_forward_table():
+    """The comparison at a forward budget where the equilibrium premise holds.
+
+    At T=8 a loop with rho ~ 0.9 is far from its fixed point, so implicit
+    differentiation is being asked for the gradient of a solution the forward
+    pass never reaches. At T=32 the residual does fall, and this is where the
+    O(1) backward is supposed to pay: same depth as a fully-unrolled loop, a
+    fraction of the memory.
+    """
+    conv = load_runs(os.path.join(RES, "converged", "*.json"))
+    base = load_runs(os.path.join(RES, "runs", "*.json"))
+    if not conv:
         return
+    order = ["deq_block", "fprm", "looped_bptt", "fpsa_r"]
     rows = []
-    entries = [("FPRM (trunc. BPTT K=4), T=8", runs.get(("maze7", "fprm"))),
-               ("Looped Transformer (BPTT), T=8", runs.get(("maze7", "looped_bptt"))),
-               ("FPSA-R (implicit), T=8", runs.get(("maze7", "fpsa_r"))),
-               ("**FPSA-R (implicit), T=32**", mm.get(("maze7", "fpsa_r")))]
-    for label, rs in entries:
+    best = max((a for a in order if conv.get(("maze", a))),
+               key=lambda a: st.mean([r["final"]["exact_match"]
+                                      for r in conv[("maze", a)]]))
+    ref_mem = None
+    for a in order:
+        rs = conv.get(("maze", a))
         if not rs:
             continue
         em, es = mean_sd([r["final"]["exact_match"] for r in rs])
         mem, _ = mean_sd([r["activation_mb"] for r in rs])
         stp, _ = mean_sd([r["step_time_s"] for r in rs])
-        T = rs[0]["config"]["max_iter"]
-        rows.append([label, T, f"{mem:.1f}", f"{stp:.2f}", fmt(em, es), len(rs)])
-    if rows:
-        write_table("matched_memory",
-                    ["Model", "train iters T", "Act. mem (MB)", "s / step",
-                     "Exact match (%)", "seeds"], rows,
-                    caption="Matched-memory comparison on maze7. Because the backward "
-                            "pass stores one step regardless of T, FPSA-R can quadruple "
-                            "its reasoning depth and still store less than a "
-                            "truncated-BPTT loop does at T=8.")
+        e9, _ = mean_sd([r["extra"].get("size9", {}).get("exact_match")
+                         for r in rs if r.get("extra")])
+        b8 = base.get(("maze", a))
+        em8 = mean_sd([r["final"]["exact_match"] for r in b8])[0] if b8 else float("nan")
+        if a == "looped_bptt":
+            ref_mem = mem
+        name = f"**{LABEL[a]}**" if a == best else LABEL[a]
+        rows.append([name, f"{em8:.1f}", fmt(em, es), f"{e9:.1f}",
+                     f"{mem:.0f}", f"{stp:.2f}", len(rs)])
+    if ref_mem:
+        for r in rows:
+            r.insert(5, f"{ref_mem / float(r[4]):.1f}x")
+    write_table("converged_forward",
+                ["Model", "EM @ T=8", "EM @ T=32", "-> 9x9 @ T=32",
+                 "Act. mem (MB)", "mem saving", "s / step", "seeds"], rows,
+                caption="maze7 trained at a forward budget of 32, where the "
+                        "fixed-point residual actually falls below tolerance. "
+                        "'mem saving' is relative to the fully-unrolled looped "
+                        "transformer at the same depth.")
+
+
+def fig_converged(name="fig_converged_forward"):
+    conv = load_runs(os.path.join(RES, "converged", "*.json"))
+    if not conv:
+        return
+    order = [a for a in ["deq_block", "fprm", "looped_bptt", "fpsa_r"]
+             if conv.get(("maze", a))]
+    fig, ax = plt.subplots(figsize=(6.4, 4.0))
+    for a in order:
+        rs = conv[("maze", a)]
+        em, es = mean_sd([r["final"]["exact_match"] for r in rs])
+        mem, _ = mean_sd([r["activation_mb"] for r in rs])
+        ax.errorbar(mem, em, yerr=es, fmt="o", ms=11 if a == "fpsa_r" else 9,
+                    color=C[a], capsize=3, lw=1.2, zorder=4)
+        ax.annotate(LABEL[a], (mem, em), textcoords="offset points",
+                    xytext=(11, -3), fontsize=8.8, color=C[a])
+    ax.set_xscale("log")
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{int(v)}"))
+    style(ax, title="Accuracy against the memory it costs (T=32)",
+          xlabel="activation memory per training step (MB, log scale)",
+          ylabel="exact match (%)", legend=False)
+    save(fig, name)
 
 
 def fig_architecture(name="fig_architecture"):
@@ -682,7 +725,8 @@ def main():
         fig_test_time_scaling(runs)
         fig_learning_curves(runs)
         fig_generalization(runs)
-        matched_memory(runs)
+    converged_forward_table()
+    fig_converged()
     abl = load_runs(os.path.join(RES, "ablation", "*.json"))
     if abl:
         task_tables(abl, "ablation", ABL_ORDER)

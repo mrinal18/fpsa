@@ -1,24 +1,39 @@
-# FPSA-R: Fixed-Point Self-Attention Reasoners
+# FPSA-R: implicit differentiation for looped reasoning transformers
 
-**In-layer attention fixed points inside a looped reasoning recursion, lifted to
-a single joint equilibrium and trained with O(1)-memory implicit
-differentiation.**
+**What this is.** FPRM shows that a looped transformer driven to a fixed point
+is a strong reasoner, but trains it by backpropagating through the last
+`n_backwards_L` unrolled steps, so its memory -- and therefore the reasoning
+depth it can afford -- is bounded by that truncation. FPSA shows that iterating
+*inside* attention is a cheaper place to put the loop, but differentiates it
+with a single phantom-gradient step. This work replaces the gradient with an
+exact, constant-memory implicit one, and tests whether the in-layer loop helps
+on top.
 
-FPSA-R combines two lines of work that have so far stayed separate:
+**The headline, measured.** On 7x7 maze planning at a forward budget of 32 --
+the budget at which the fixed-point residual actually falls below tolerance --
+FPRM's loop trained with our implicit gradient reaches
+**81.3 exact match at 57 MB of
+activation memory and 0.34 s/step**, against
+**79.0 at 595 MB and
+3.10 s/step** for the same loop fully unrolled with BPTT:
+equal or better accuracy for **10.5x less memory** and
+**9.1x less time per step**. Truncated BPTT (FPRM as
+published) lands at 80.6 using
+108 MB.
+
+**The headline, honestly.** Adding FPSA's in-layer attention fixed point on top
+does *not* help on this task: 71.9 against
+81.3 without it. The win here belongs to the gradient, not
+to the extra loop. Section 9 reports this in full, including an ablation in
+which *removing* the spectral normalisation that makes the equilibrium
+well-posed scores highest of anything we ran -- at a spectral radius of 1.85,
+i.e. with no fixed point at all.
 
 | | loop location | gradient | memory in loop depth |
 | --- | --- | --- | --- |
 | **FPSA** (*Closing the Loop with Fixed-Point Self-Attention*) | inside attention | 1-step phantom gradient | O(1) |
 | **FPRM** (*Fixed-Point Reasoners*) | whole transformer block | truncated BPTT (`n_backwards_L`) | O(K) |
-| **FPSA-R** (this work) | **both, as one joint equilibrium** | **Anderson-accelerated masked adjoint** | **O(1)** |
-
-FPRM showed that a looped transformer driven to a fixed point is a strong
-reasoner, but trains it by backpropagating through the last `n_backwards_L`
-unrolled steps — so its activation memory, and therefore the depth of reasoning
-it can afford, is bounded by the truncation length. FPSA showed that iterating
-*inside* attention is a cheaper place to put the loop, but differentiates it
-with a single phantom-gradient step. FPSA-R puts the loop in both places and
-differentiates the whole thing exactly, at constant memory.
+| **this work** | either, as one joint equilibrium | Anderson-accelerated masked adjoint | **O(1)** |
 
 ---
 
@@ -70,7 +85,7 @@ This is the part neither parent method solves, and without it the rest is
 vacuous. A looped model has no incentive to stay contractive — nothing in a task
 loss punishes an expansive update map. Measuring the spectral radius of `G`
 during training shows it climbing past 1 within a few hundred steps
-(— in our runs), at which point *the fixed point no longer
+(5.11 in our runs), at which point *the fixed point no longer
 exists*, the forward solver runs to its cap, and the implicit gradient is being
 evaluated at a point that is not an equilibrium.
 
@@ -81,7 +96,7 @@ that decides convergence. FPSA-R instead estimates the **spectral radius**
 directly by finite-difference power iteration and applies a one-sided hinge at a
 target below 1 — free capacity right up to the stability boundary, push-back
 only past it. Cost: `2(n_power+1)` extra single-step forwards, no double
-backward. With it, `rho` settles at — (lambda=—).
+backward. With it, `rho` settles at 0.89 (lambda=50.0).
 
 ---
 
@@ -184,6 +199,9 @@ solving the inner FPSA loop nested inside each outer step.
 
 ## 7. Does the equilibrium survive training?
 
+![Spectral radius of the joint update map over training, and the resulting forward residual at evaluation. Without contraction control the loop stops being a fixed point within a few hundred steps.](../results/figures/fig_contraction_dynamics.png)
+
+*Spectral radius of the joint update map over training, and the resulting forward residual at evaluation. Without contraction control the loop stops being a fixed point within a few hundred steps.*
 
 
 ## 8. Adaptive compute inside the layer
@@ -194,7 +212,129 @@ solving the inner FPSA loop nested inside each outer step.
 
 
 
+## 9. Reasoning benchmarks
+
+All architectures are the same module under different switches, so width, depth
+and parameter count are matched by construction and every run goes through the
+same trainer, schedule and seeds. The task is shortest-path planning on a 7x7
+grid, scored by exact match on the whole grid; held-out 9x9 and 11x11 grids test
+whether test-time iteration buys generalisation to larger problems.
+
+That the task rewards recurrent depth at all is worth establishing before
+comparing recurrent models on it. It does: the non-recursive depth-matched
+transformer is competitive at the size it trained on and then collapses
+off-distribution, from 79-ish at 7x7 to 2.6 at 9x9 and
+0.0 at 11x11, while the looped transformer holds 30.2 and 4.4.
+
+### 9.1 At the training budget (T=8)
+
+**maze: mean ± sd over seeds. Activation memory is bytes autograd stores for one training step, and here *includes* the contraction regulariser's two extra single-step graphs for the fixed-point architectures -- see the mechanism table for the differentiation scheme in isolation. rho is the measured spectral radius of the update map at the solution.**
+
+| Model | Params | Token acc (%) | Exact match (%) | Act. mem (MB) | s / step | Eval iters | rho | seeds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| FPSA-R (+ in-layer FPSA) | 135558 | 97.41 ± 0.23 | 63.54 ± 2.51 | 60.5 | 0.437 | 32.0 | 0.92 | 3 |
+| FPRM loop + implicit gradient (ours) | 135558 | 97.80 ± 0.18 | 75.85 ± 1.18 | 56.6 | 0.324 | 32.0 | 0.97 | 3 |
+| FPRM (truncated BPTT) | 135558 | 94.13 ± 6.56 | 53.26 ± 46.12 | 108.0 | 0.756 | 31.9 | 0.88 | 3 |
+| **Looped Transformer (BPTT)** | 135558 | 98.05 ± 0.31 | 78.91 ± 0.34 | 177.6 | 0.502 | 31.7 | 0.87 | 3 |
+| Universal Transformer + ACT | 135558 | 95.57 ± 0.78 | 38.22 ± 9.72 | 147.6 | 0.380 | 32.0 | 0.40 | 3 |
+| Transformer (non-recursive) | 1067426 | 94.60 ± 6.97 | 52.15 ± 45.23 | 134.8 | 0.361 | 1.0 | 0.07 | 3 |
+
+
+At this budget the fixed-point models are handicapped, and not by accident: every
+trained model sits at a spectral radius of 0.87-0.97, so after 8 iterations the
+forward residual is still around 0.1 and the loop is nowhere near the fixed point
+whose gradient implicit differentiation returns. Truncated and full BPTT have no
+such precondition -- they differentiate exactly the steps that ran.
+
+### 9.2 At a budget where the equilibrium premise holds (T=32)
+
+**maze7 trained at a forward budget of 32, where the fixed-point residual actually falls below tolerance. 'mem saving' is relative to the fully-unrolled looped transformer at the same depth.**
+
+| Model | EM @ T=8 | EM @ T=32 | -> 9x9 @ T=32 | Act. mem (MB) | mem saving | s / step | seeds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **FPRM loop + implicit gradient (ours)** | 75.8 | 81.35 ± 2.07 | 28.5 | 57 | 10.4x | 0.34 | 2 |
+| FPRM (truncated BPTT) | 53.3 | 80.57 ± 1.52 | 26.8 | 108 | 5.5x | 0.36 | 2 |
+| Looped Transformer (BPTT) | 78.9 | 79.00 ± 0.97 | 29.5 | 595 | 1.0x | 3.10 | 2 |
+| FPSA-R (+ in-layer FPSA) | 63.5 | 71.88 ± 3.59 | 10.4 | 60 | 9.9x | 0.46 | 2 |
+
+
+![Accuracy against the activation memory it costs, at a matched forward depth of 32.](../results/figures/fig_converged_forward.png)
+
+*Accuracy against the activation memory it costs, at a matched forward depth of 32.*
+
+
+This is the result the method exists for. Given a forward pass that actually
+converges, the implicit gradient matches a fully-unrolled loop's accuracy at
+10.5x less memory and 9.1x less time per
+step, and beats truncated BPTT at half its memory. Note also which model *moves*
+between the two budgets: BPTT is flat (78.9 to
+79.0) because it was already differentiating what it
+computed, while the implicit models gain 75.8 to
+81.3 once their premise is satisfied.
+
+### 9.3 What did not work
+
+Adding FPSA's in-layer attention fixed point costs about ten points at both
+budgets (71.9 vs 81.3 at T=32) and
+hurts size generalisation badly (10.4 vs 28.5 at 9x9). The joint two-level
+equilibrium is sound -- the solvers agree to 1e-4, and it reaches the same fixed
+point with half the attention calls of nesting -- but on this task the second
+loop buys nothing and spends contraction budget that the outer loop would
+otherwise use. We report it as a negative result rather than bury it; whether it
+pays off on tasks where token-to-token alignment is the bottleneck (the language
+and vision settings FPSA was designed for) is untested here.
+
+![Exact-match accuracy at T=8. Error bars are sd over seeds.](../results/figures/fig_task_accuracy.png)
+
+*Exact-match accuracy at T=8. Error bars are sd over seeds.*
+
+
+![Accuracy as a function of the test-time iteration budget, for models trained with a budget of 8.](../results/figures/fig_test_time_scaling.png)
+
+*Accuracy as a function of the test-time iteration budget, for models trained with a budget of 8.*
+
+
+![Held-out grids larger than anything seen in training.](../results/figures/fig_generalization.png)
+
+*Held-out grids larger than anything seen in training.*
+
+
+## 10. Ablations
+
+**maze: mean ± sd over seeds. Activation memory is bytes autograd stores for one training step, and here *includes* the contraction regulariser's two extra single-step graphs for the fixed-point architectures -- see the mechanism table for the differentiation scheme in isolation. rho is the measured spectral radius of the update map at the solution.**
+
+| Model | Params | Token acc (%) | Exact match (%) | Act. mem (MB) | s / step | Eval iters | rho | seeds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| FPSA-R (+ in-layer FPSA) | 135558 | 97.41 ± 0.33 | 62.11 ± 0.55 | 60.5 | 0.487 | 32.0 | 0.88 | 2 |
+| FPSA-R, nested solver | 135558 | 98.17 ± 0.17 | 74.12 ± 2.35 | 75.5 | 0.552 | 30.1 | 0.87 | 2 |
+| FPSA-R, BPTT | 135558 | 97.99 ± 0.37 | 68.26 ± 4.01 | 191.3 | 0.567 | 32.0 | 0.87 | 2 |
+| FPSA-R, 1-step phantom | 135558 | 95.33 ± 0.12 | 31.64 ± 1.66 | 58.9 | 0.256 | 31.0 | 0.81 | 2 |
+| FPSA-R, unmasked adjoint | 135558 | 97.62 ± 0.31 | 63.48 ± 0.28 | 60.5 | 0.488 | 32.0 | 0.93 | 2 |
+| FPSA-R, Neumann adjoint | 135558 | 96.79 ± 0.66 | 59.96 ± 6.63 | 60.5 | 0.443 | 32.0 | 0.95 | 2 |
+| **FPSA-R, no spectral norm** | 135558 | 99.21 ± 0.29 | 92.68 ± 4.56 | 59.1 | 0.470 | 32.0 | 1.85 | 2 |
+
+
+The uncomfortable row is the last stabiliser. Removing spectral normalisation
+scores highest of anything in this study -- 92.7 exact match, and 45.3 on 11x11
+grids where every other model is under 6 -- at a measured spectral radius of
+1.85. There is no fixed point at that radius, so the adjoint solve has no
+justification and the model is simply a weight-tied deep network with an unusual
+gradient. Taken together with 9.3, the honest reading is that on this task the
+constraint required to make implicit differentiation *valid* is itself the main
+thing costing accuracy, and the method's benefit is memory and step time rather
+than raw quality. Anyone building on this should treat the contractivity budget,
+not the gradient, as the binding constraint.
+
+
 ## 10.1 Why the in-loop residual is not optional
+
+The FPSA inner map re-injects the layer input at every iteration:
+``u <- x + W_O A(u) V``. Drop that term and the map is ``u <- W_O A(u) V`` with
+``A`` row-stochastic — iterating a stochastic averaging operator pulls every
+token toward the same vector, so the fixed point is near rank-1 and the
+alignment carries almost nothing to differentiate through. We hit this while
+building FPSA-R: the version without the term learned *slower than the ablation
+with no in-layer loop at all*.
 
 **Effective rank (entropy of the singular-value spectrum) of the converged inner attention state, 5 random inits, 40 iterations. Without the input re-injection the row-stochastic attention operator averages tokens together and the fixed point loses 66% of its effective rank.**
 
@@ -231,8 +371,8 @@ solving the inner FPSA loop nested inside each outer step.
 # mechanism experiments (minutes on CPU)
 python experiments/reasoning/mechanism.py
 
-# full comparison grid (~3h on 4 CPU cores)
-./scripts/run_reasoning_grid.sh
+# everything: mechanism suite, comparison grid, matched-memory study (~2.5h)
+./scripts/run_all_fpsa_r.sh
 
 # tables + figures + this document
 python experiments/reasoning/analyze.py

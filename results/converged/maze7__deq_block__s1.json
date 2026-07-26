@@ -1,0 +1,245 @@
+{
+ "arch": "deq_block",
+ "task": "maze",
+ "seed": 1,
+ "params": 135558,
+ "activation_mb": 56.631683349609375,
+ "step_time_s": 0.3306608200073242,
+ "total_time_s": 932.2650766372681,
+ "final": {
+  "token_acc": 98.046875,
+  "exact_match": 79.8828125,
+  "mean_iters": 32.0,
+  "mean_residual": 0.13921049766940996
+ },
+ "best": {
+  "token_acc": 98.046875,
+  "exact_match": 79.8828125,
+  "mean_iters": 32.0,
+  "mean_residual": 0.13921049766940996
+ },
+ "scaling": {
+  "1": {
+   "token_acc": 71.70360331632654,
+   "exact_match": 0.0,
+   "mean_iters": 1.0,
+   "mean_residual": 1068928724.0
+  },
+  "2": {
+   "token_acc": 87.26482780612245,
+   "exact_match": 1.171875,
+   "mean_iters": 2.0,
+   "mean_residual": 1.4577860534191132
+  },
+  "4": {
+   "token_acc": 92.90497448979592,
+   "exact_match": 15.4296875,
+   "mean_iters": 4.0,
+   "mean_residual": 0.9819881580770016
+  },
+  "8": {
+   "token_acc": 96.44850127551021,
+   "exact_match": 48.4375,
+   "mean_iters": 8.0,
+   "mean_residual": 0.953266154974699
+  },
+  "16": {
+   "token_acc": 97.85554846938776,
+   "exact_match": 76.171875,
+   "mean_iters": 16.0,
+   "mean_residual": 0.4017687886953354
+  },
+  "32": {
+   "token_acc": 98.046875,
+   "exact_match": 79.8828125,
+   "mean_iters": 32.0,
+   "mean_residual": 0.13921049766940996
+  },
+  "64": {
+   "token_acc": 98.23421556122449,
+   "exact_match": 81.640625,
+   "mean_iters": 63.5625,
+   "mean_residual": 0.04494306979177054
+  }
+ },
+ "extra": {
+  "size9": {
+   "token_acc": 93.1520061728395,
+   "exact_match": 26.953125,
+   "mean_iters": 32.0,
+   "mean_residual": 0.17970789084210992
+  },
+  "size11": {
+   "token_acc": 87.89708161157024,
+   "exact_match": 3.90625,
+   "mean_iters": 32.0,
+   "mean_residual": 0.09905638312920928
+  }
+ },
+ "spectral_radius": 1.2269935607910156,
+ "lipschitz_bound": [
+  0.2481481516203071
+ ],
+ "history": [
+  {
+   "step": 250,
+   "loss": 0.16331419348716736,
+   "gnorm": 0.22387540340423584,
+   "elapsed": 125.61001706123352,
+   "train_iters": 21,
+   "bwd_iters": 11,
+   "rho_train": 0.659772515296936,
+   "token_acc": 93.97720025510205,
+   "exact_match": 20.703125,
+   "mean_iters": 21.4375,
+   "mean_residual": 0.0008447394648101181
+  },
+  {
+   "step": 500,
+   "loss": 0.07686737179756165,
+   "gnorm": 0.47648027539253235,
+   "elapsed": 394.70562076568604,
+   "train_iters": 32,
+   "bwd_iters": 12,
+   "rho_train": 0.7183366417884827,
+   "token_acc": 96.83514030612245,
+   "exact_match": 55.859375,
+   "mean_iters": 32.0,
+   "mean_residual": 0.028463146176363807
+  },
+  {
+   "step": 750,
+   "loss": 0.058749161660671234,
+   "gnorm": 0.27585360407829285,
+   "elapsed": 634.0435318946838,
+   "train_iters": 32,
+   "bwd_iters": 12,
+   "rho_train": 0.5616437196731567,
+   "token_acc": 97.74792729591837,
+   "exact_match": 74.0234375,
+   "mean_iters": 32.0,
+   "mean_residual": 0.07010792925575515
+  },
+  {
+   "step": 1000,
+   "loss": 0.028675422072410583,
+   "gnorm": 0.3825828731060028,
+   "elapsed": 875.8846890926361,
+   "train_iters": 32,
+   "bwd_iters": 12,
+   "rho_train": 0.6606827974319458,
+   "token_acc": 98.046875,
+   "exact_match": 79.8828125,
+   "mean_iters": 32.0,
+   "mean_residual": 0.13921049766940996
+  }
+ ],
+ "config": {
+  "vocab_size": 4,
+  "out_vocab_size": 2,
+  "seq_len": 121,
+  "num_puzzle_identifiers": 1,
+  "puzzle_emb_len": 0,
+  "hidden_size": 128,
+  "num_heads": 4,
+  "expansion": 2.0,
+  "n_block_layers": 1,
+  "pos_encodings": "rope",
+  "rope_theta": 10000.0,
+  "conv_type": "conv2d",
+  "conv_kernel_size": 3,
+  "conv_bias": false,
+  "residual_scale": "input-independent",
+  "alpha_1_init": 0.75,
+  "alpha_2_init": 0.25,
+  "max_iter": 32,
+  "max_iter_eval": 32,
+  "fp_thresh": 0.001,
+  "stepsize": 1.0,
+  "stepsize_decay": 0.9,
+  "decay_patience": 5,
+  "init_std": 0.0,
+  "fpsa": false,
+  "solver_mode": "joint",
+  "inner_max_iter": 6,
+  "inner_tol": 0.001,
+  "inner_damping": 0.8,
+  "spectral_norm": true,
+  "mlp_sigma": 0.5,
+  "attn_temperature": 1.0,
+  "grad_mode": "implicit",
+  "n_backwards": 4,
+  "backward_solver": "anderson",
+  "backward_max_iter": 12,
+  "backward_tol": 0.0001,
+  "anderson_m": 5,
+  "anderson_beta": 1.0,
+  "anderson_lam": 0.0001,
+  "masked_adjoint": true,
+  "adjoint_mask_tol_mult": 10.0,
+  "adjoint_mask_max_frac": 0.25,
+  "halting": "fixed_point",
+  "halt_max_steps": 4,
+  "halt_exploration_prob": 0.1,
+  "q_loss_coeff": 0.5,
+  "dropout": 0.0,
+  "contraction_lambda": 10.0,
+  "contraction_target": 0.9,
+  "n_power_iterations": 1,
+  "jacobian_eps": 0.001,
+  "rms_norm_eps": 1e-05,
+  "causal": false,
+  "forward_dtype": "float32"
+ },
+ "args": {
+  "arch": "deq_block",
+  "task": "maze",
+  "seed": 1,
+  "steps": 1000,
+  "bs": 32,
+  "lr": 0.003,
+  "lr_min_ratio": 0.1,
+  "wd": 0.01,
+  "clip": 1.0,
+  "ponder_coeff": 0.001,
+  "hidden": 128,
+  "heads": 4,
+  "block_layers": 1,
+  "transformer_depth": 8,
+  "expansion": 2.0,
+  "max_iter": 32,
+  "max_iter_eval": 32,
+  "n_backwards": 4,
+  "fp_thresh": 0.001,
+  "inner_damping": 0.8,
+  "contraction_lambda": 10.0,
+  "contraction_target": 0.9,
+  "mlp_sigma": 0.5,
+  "n_train": 8000,
+  "n_test": 512,
+  "n_blank": 30,
+  "maze_size": 7,
+  "length": 16,
+  "group": "a5",
+  "n_gen": 4,
+  "extra_blanks": [],
+  "extra_sizes": [
+   9,
+   11
+  ],
+  "extra_lengths": [],
+  "scaling_iters": [
+   1,
+   2,
+   4,
+   8,
+   16,
+   32,
+   64
+  ],
+  "eval_every": 250,
+  "threads": 1,
+  "out": "results/converged/maze7__deq_block__s1.json",
+  "verbose": true
+ }
+}

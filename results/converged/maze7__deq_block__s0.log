@@ -1,0 +1,18 @@
+[deq_block/maze/s0] step   250 loss 0.1540 tok 93.65 em 20.90 it 15.3
+[deq_block/maze/s0] step   500 loss 0.0669 tok 96.72 em 48.05 it 32.0
+[deq_block/maze/s0] step   750 loss 0.0409 tok 98.10 em 71.48 it 32.0
+[deq_block/maze/s0] step  1000 loss 0.0700 tok 98.70 em 82.81 it 32.0
+{
+ "arch": "deq_block",
+ "task": "maze",
+ "seed": 0,
+ "params": 135558,
+ "activation_mb": 56.631683349609375,
+ "step_time_s": 0.35423477490743,
+ "final": {
+  "token_acc": 98.70057397959184,
+  "exact_match": 82.8125,
+  "mean_iters": 32.0,
+  "mean_residual": 0.16299100199830718
+ }
+}
