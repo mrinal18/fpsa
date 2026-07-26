@@ -284,6 +284,71 @@ def m1b_fidelity_vs_contraction(alphas=(0.3, 0.5, 0.7, 0.85, 0.93, 0.97),
             "reference": f"exact BPTT through {ref_iters} steps", "results": out}
 
 
+def m1c_fidelity_vs_forward_budget(budgets=(2, 4, 8, 16, 32, 64, 128),
+                                   ref_iters=400, n_seeds=3, alpha_2=0.85):
+    """Gradient error as a function of the *forward* budget. The precondition.
+
+    Implicit differentiation returns the gradient of the equilibrium. That is
+    the right gradient only if the forward solver actually reached the
+    equilibrium: the adjoint solves ``(I - J^T) lambda = g`` at whatever point
+    the forward stopped at, and if that point is not a fixed point, the answer
+    describes a solution the model never computes. Truncated BPTT has no such
+    precondition -- it differentiates exactly the T steps that were run, right
+    or wrong.
+
+    So the two schemes are not competing on a single axis. Truncated BPTT is
+    correct-for-what-was-computed at any T; implicit differentiation is
+    correct-for-the-equilibrium once T is large enough for the residual to
+    fall, and free of memory cost in T thereafter. This experiment locates the
+    crossover, and it is what explains the benchmark table: a loop with
+    ``rho ~ 0.8`` needs roughly 30 iterations to converge, so at T=8 the
+    implicit gradient is being asked a question the forward pass has not
+    answered.
+
+    We hold the contraction factor at a realistic value and sweep T, measuring
+    each scheme against the true equilibrium gradient.
+    """
+    t = _task(name="maze", n=256, size=7)
+    X, Y = t.train.x[:16], t.train.y[:16]
+    M = torch.ones_like(X, dtype=torch.bool)
+    base = dict(alpha_1_init=0.85, alpha_2_init=alpha_2, mlp_sigma=0.5)
+
+    schemes = [("implicit (ours)", "fpsa_r", {}),
+               ("trunc-BPTT K=4", "fpsa_r_bptt", dict(grad_mode="trunc_bptt", n_backwards=4)),
+               ("full BPTT", "fpsa_r_bptt", {})]
+    out = {name: [] for name, _, _ in schemes}
+    residual = []
+    rho = None
+
+    for T in budgets:
+        per = {name: [] for name, _, _ in schemes}
+        res_s = []
+        for seed in range(n_seeds):
+            ref, m = _grad("fpsa_r_bptt", t, X, Y, M, seed, max_iter=ref_iters, **base)
+            if rho is None:
+                m.eval()
+                xin = m._inputs(X[:4], None)
+                si = m._seq_info(xin.shape[1])
+                sf = lambda s: m.block.joint_step(s, xin, si)
+                s = m.block.init_state(4, xin.shape[1], xin.device, xin.dtype)
+                with torch.no_grad():
+                    for _ in range(ref_iters):
+                        s = s + (sf(s) - s)
+                rho = empirical_spectral_radius(sf, s)
+            for name, arch, kw in schemes:
+                g, mm = _grad(arch, t, X, Y, M, seed, max_iter=T, **base, **kw)
+                per[name].append(float((g - ref).norm() / ref.norm()))
+                if name == "implicit (ours)":
+                    res_s.append(mm.last_info.rel_residual)
+        for name in per:
+            out[name].append(sum(per[name]) / n_seeds)
+        residual.append(sum(res_s) / n_seeds)
+
+    return {"budgets": list(budgets), "rho": rho, "forward_residual": residual,
+            "reference": f"equilibrium gradient (exact BPTT through {ref_iters} steps)",
+            "results": out}
+
+
 def m5_solver_cost(tol=1e-3, max_outer=64):
     """Attention calls and wall-clock to reach a target residual: the joint
     two-level solve vs solving the inner FPSA loop nested inside each outer
@@ -399,6 +464,7 @@ def m7_rank_collapse(iters=40, n_seeds=5):
 EXPERIMENTS = {
     "m1_gradient_fidelity": m1_gradient_fidelity,
     "m1b_fidelity_vs_contraction": m1b_fidelity_vs_contraction,
+    "m1c_fidelity_vs_forward_budget": m1c_fidelity_vs_forward_budget,
     "m2_activation_memory": m2_activation_memory,
     "m3_contraction_dynamics": m3_contraction_dynamics,
     "m4_adjoint_solver": m4_adjoint_solver,

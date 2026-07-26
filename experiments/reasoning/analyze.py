@@ -407,6 +407,39 @@ def table_gradient_fidelity():
                         f"T={d['forward_iters']}, {d['n_seeds']} random inits.")
 
 
+def fig_forward_budget(name="fig_forward_budget"):
+    """When is the implicit gradient allowed to be the right gradient?"""
+    d = mech("m1c_fidelity_vs_forward_budget")
+    if not d:
+        return
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(10.8, 3.9))
+    cols = {"implicit (ours)": C["fpsa_r"], "trunc-BPTT K=4": C["fprm"],
+            "full BPTT": C["looped_bptt"]}
+    for k, ys in d["results"].items():
+        ours = "implicit" in k
+        ax.plot(d["budgets"], ys, marker="o", ms=4, lw=2.6 if ours else 1.5,
+                ls="-" if ours else "--", color=cols.get(k, "#999"), label=k,
+                zorder=5 if ours else 3)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{int(v)}"))
+    style(ax, title=f"Error vs the equilibrium gradient  ($\\rho$={d['rho']:.2f})",
+          xlabel="forward budget $T$ used in training",
+          ylabel="relative gradient error")
+
+    ax2.plot(d["budgets"], d["forward_residual"], marker="o", ms=4, lw=2.2,
+             color=C["fpsa_r"])
+    ax2.axhline(1e-3, color="#888888", ls=":", lw=1.3)
+    ax2.text(d["budgets"][0], 1.3e-3, "convergence tolerance", fontsize=8,
+             color="#666666")
+    ax2.set_xscale("log", base=2)
+    ax2.set_yscale("log")
+    ax2.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{int(v)}"))
+    style(ax2, title="Forward residual actually reached at $T$",
+          xlabel="forward budget $T$", ylabel="relative residual", legend=False)
+    save(fig, name)
+
+
 def fig_contraction(name="fig_contraction_dynamics"):
     d = mech("m3_contraction_dynamics")
     if not d:
@@ -636,6 +669,7 @@ def main():
     fig_gradient_fidelity()
     fig_memory()
     fig_contraction()
+    fig_forward_budget()
     fig_adjoint()
     fig_token_convergence()
     fig_architecture()
