@@ -585,14 +585,14 @@ def table_rank_collapse():
 def matched_memory(runs):
     """The practical payoff: at *less* activation memory than FPRM's truncated
     BPTT uses at 8 iterations, the O(1) backward lets FPSA-R run 32."""
-    mm = load_runs(os.path.join(RES, "matched_memory", "*.json"))
+    mm = load_runs(os.path.join(RES, "converged", "*.json"))
     if not mm or not runs:
         return
     rows = []
     entries = [("FPRM (trunc. BPTT K=4), T=8", runs.get(("maze7", "fprm"))),
                ("Looped Transformer (BPTT), T=8", runs.get(("maze7", "looped_bptt"))),
                ("FPSA-R (implicit), T=8", runs.get(("maze7", "fpsa_r"))),
-               ("**FPSA-R (implicit), T=32**", list(mm.values())[0] if mm else None)]
+               ("**FPSA-R (implicit), T=32**", mm.get(("maze7", "fpsa_r")))]
     for label, rs in entries:
         if not rs:
             continue

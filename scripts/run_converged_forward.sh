@@ -23,7 +23,7 @@ run() {
     --out "$out" "$@" > "${out%.json}.log" 2>&1
 }
 
-for seed in 0 1 2; do
+for seed in 0 1; do
   for arch in fpsa_r deq_block fprm looped_bptt; do
     run "$arch" "$seed" &
     while [ "$(jobs -rp | wc -l)" -ge 3 ]; do wait -n; done
