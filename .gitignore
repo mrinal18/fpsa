@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+results/.datacache/
+results/probe/
+results/probe2/
+results/*.log
+results/runs/*.log
+results/ablation/*.log

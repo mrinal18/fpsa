@@ -1,0 +1,21 @@
+{
+ "tol": 0.001,
+ "modes": {
+  "joint": {
+   "outer_iters": 7,
+   "attention_calls": 7.0,
+   "wall_clock_s": 0.26744399070739744,
+   "final_residual": 0.00047571450704708695
+  },
+  "nested": {
+   "outer_iters": 5,
+   "attention_calls": 16.0,
+   "wall_clock_s": 0.40863633155822754,
+   "final_residual": 0.0005069595645181835
+  },
+  "speedup": {
+   "attention_calls": 2.2857142857142856,
+   "wall_clock": 1.5279323737182207
+  }
+ }
+}
