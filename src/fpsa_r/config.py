@@ -1,7 +1,7 @@
 """Configuration for FPSA-R (Fixed-Point Self-Attention Reasoner) and baselines."""
 
-from dataclasses import dataclass, field, asdict
-from typing import Literal, Optional
+from dataclasses import asdict, dataclass
+from typing import Literal
 
 
 @dataclass

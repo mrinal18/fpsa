@@ -13,7 +13,6 @@ Everything is generated on the fly from a seed, so a run is reproducible without
 shipping data files.
 """
 
-import math
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -293,7 +292,6 @@ def _cached(key: str, build):
     every generating parameter."""
     os.makedirs(_CACHE_DIR, exist_ok=True)
     path = os.path.join(_CACHE_DIR, key + ".pt")
-    ds = build.__self__ if hasattr(build, "__self__") else None
     if os.path.exists(path):
         try:
             blob = torch.load(path, weights_only=False)

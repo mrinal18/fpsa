@@ -12,7 +12,6 @@ import time
 from typing import Dict, Optional
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -208,7 +207,7 @@ def run(args) -> Dict:
             for _ in range(args.max_iter_eval):
                 s = s + (step_fn(s) - s)
         rho = empirical_spectral_radius(step_fn, s)
-    except Exception as e:  # diagnostics must never sink a run
+    except Exception:  # diagnostics must never sink a run
         rho = float("nan")
 
     result = {

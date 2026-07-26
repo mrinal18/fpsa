@@ -120,15 +120,17 @@ def solve_equilibrium(step_fn: Callable[[torch.Tensor], torch.Tensor],
                                    token_tol=cfg.fp_thresh * cfg.adjoint_mask_tol_mult)
             s = s.detach()
         trace = list(info.residual_trace) if info is not None else []
+        r = info.rel_residual if info is not None else float("inf")
         for _ in range(n_grad):
             s_new = step_fn(s)
             with torch.no_grad():
-                r = ((s_new - s).norm(dim=-1) / s.norm(dim=-1).clamp_min(1e-8)).amax()
+                r = float(((s_new - s).norm(dim=-1)
+                           / s.norm(dim=-1).clamp_min(1e-8)).amax())
                 if record_trace:
-                    trace.append(float(r))
+                    trace.append(r)
             s = s + cfg.stepsize * (s_new - s)
         from .solvers import SolverInfo
-        out_info = SolverInfo(n_iters=max_iter, rel_residual=float(r),
+        out_info = SolverInfo(n_iters=max_iter, rel_residual=r,
                               residual_trace=trace, converged_frac=1.0)
         return s, out_info
 

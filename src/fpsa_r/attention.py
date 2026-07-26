@@ -82,9 +82,23 @@ class FPSAAttention(nn.Module):
         """V = x W_V, split into heads. Constant for the whole inner loop."""
         return self._split(self.W_V(x))
 
-    def step(self, u: torch.Tensor, v: torch.Tensor, cos_sin: Optional[CosSin] = None,
+    def step(self, u: torch.Tensor, v: torch.Tensor, x_res: torch.Tensor,
+             cos_sin: Optional[CosSin] = None,
              attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """One damped FPSA iteration. ``u``: (B,N,d); ``v``: (B,H,N,dh)."""
+        """One damped FPSA iteration.
+
+        ``u``: (B,N,d) inner state; ``v``: (B,H,N,dh) frozen values;
+        ``x_res``: (B,N,d) the layer input, re-injected every iteration.
+
+        The ``x_res +`` term is not optional. Without it the inner map is
+        ``u <- W_O A(u) V`` with ``A`` row-stochastic, and repeatedly applying a
+        stochastic averaging operator drives every token to the same vector:
+        the fixed point is rank-1, and the gradient to ``W_Q``/``W_K`` vanishes
+        because the alignment no longer distinguishes tokens. Re-injecting the
+        layer input keeps token identity across the loop and makes the fixed
+        point ``u* = x + W_O A(u*) V`` -- the form used in the FPSA paper
+        (Eq. 5) and in this repository's original ``src/model.py``.
+        """
         q = self._split(self.W_Q(u))
         k = self._split(self.W_K(u))
         q, k = apply_rotary(q, k, cos_sin)
@@ -101,7 +115,7 @@ class FPSAAttention(nn.Module):
         a = F.softmax(scores, dim=-1)
         if self._attn_drop_mask is not None:
             a = a * self._attn_drop_mask
-        out = self.W_O(self._merge(torch.matmul(a, v)))
+        out = x_res + self.W_O(self._merge(torch.matmul(a, v)))
         if self.damping < 1.0:
             return (1.0 - self.damping) * u + self.damping * out
         return out
@@ -115,7 +129,7 @@ class FPSAAttention(nn.Module):
         u = x if u0 is None else u0
         info = {"iters": 0, "residual": float("inf")}
         for i in range(self.inner_max_iter):
-            u_next = self.step(u, v, cos_sin, attn_mask)
+            u_next = self.step(u, v, x, cos_sin, attn_mask)
             with torch.no_grad():
                 r = ((u_next - u).norm(dim=-1) / u.norm(dim=-1).clamp_min(1e-8)).max()
             u = u_next

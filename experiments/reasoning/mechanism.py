@@ -24,7 +24,6 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.fpsa_r import build_model                                       # noqa: E402
-from src.fpsa_r.config import FPSARConfig                                # noqa: E402
 from src.fpsa_r.diagnostics import (ActivationMemory,                    # noqa: E402
                                     empirical_spectral_radius)
 from src.fpsa_r.solvers import anderson_solve, neumann_solve             # noqa: E402
@@ -222,7 +221,7 @@ def m4_adjoint_solver(alphas=(0.5, 0.75, 0.9, 0.97), max_iter=30, ref_iter=400):
 
 # =============================================================================
 def m1b_fidelity_vs_contraction(alphas=(0.3, 0.5, 0.7, 0.85, 0.93, 0.97),
-                                T=250, ref_iters=700, n_seeds=3):
+                                T=150, ref_iters=450, n_seeds=3):
     """Gradient error as a function of the loop's contraction factor.
 
     This is the structural argument for implicit differentiation. Truncating
@@ -269,12 +268,18 @@ def m1b_fidelity_vs_contraction(alphas=(0.3, 0.5, 0.7, 0.85, 0.93, 0.97),
                 g, _ = _grad(arch, t, X, Y, M, seed, max_iter=T, **base, **kw)
                 per[name]["rel"].append(float((g - ref).norm() / ref.norm()))
                 per[name]["cos"].append(float(F.cosine_similarity(g, ref, dim=0)))
-        r = sum(rho_s) / len(rho_s)
+        import math as _m
+
+        def _avg(xs):
+            good = [x for x in xs if _m.isfinite(x)]
+            return sum(good) / len(good) if good else float("nan")
+
+        r = _avg(rho_s)
         rhos.append(r)
         for name in per:
             out[name]["rho"].append(r)
-            out[name]["rel"].append(sum(per[name]["rel"]) / n_seeds)
-            out[name]["cos"].append(sum(per[name]["cos"]) / n_seeds)
+            out[name]["rel"].append(_avg(per[name]["rel"]))
+            out[name]["cos"].append(_avg(per[name]["cos"]))
     return {"alphas": list(alphas), "rhos": rhos, "forward_iters": T,
             "reference": f"exact BPTT through {ref_iters} steps", "results": out}
 
@@ -347,6 +352,50 @@ def m6_token_convergence(max_iter=24):
             "is_blank": (X[0] == 0).tolist(), "max_iter": max_iter}
 
 
+def m7_rank_collapse(iters=40, n_seeds=5):
+    """Does the inner attention fixed point keep tokens distinct?
+
+    The FPSA inner map re-injects the layer input at every iteration. Drop that
+    term and the map becomes ``u <- W_O A(u) V`` with ``A`` row-stochastic;
+    iterating a stochastic averaging operator drives every token toward the same
+    vector, so the fixed point is near rank-1 and the alignment carries no
+    information to differentiate through. We measure the effective rank
+    (entropy of the singular-value spectrum) of the converged inner state with
+    and without the term.
+    """
+    t = _task(name="maze", n=64, size=7)
+    X = t.train.x[:4]
+
+    def eff_rank(u):
+        u = u - u.mean(0, keepdim=True)
+        sv = torch.linalg.svdvals(u)
+        p = sv / sv.sum().clamp_min(1e-12)
+        return float(torch.exp(-(p * p.clamp_min(1e-12).log()).sum()))
+
+    out = {"with_residual": [], "without_residual": []}
+    for seed in range(n_seeds):
+        torch.manual_seed(seed)
+        m = build_model("fpsa_r", **_cfg_kw(t, max_iter=iters, max_iter_eval=iters,
+                                            contraction_lambda=0.0))
+        m.eval()
+        attn = m.block.layers[0].attn
+        orig = attn.step
+        xin = m._inputs(X, None)
+        si = m._seq_info(xin.shape[1])
+        for key, drop in (("with_residual", False), ("without_residual", True)):
+            attn.step = ((lambda u, v, x_res, *a, **k:
+                          orig(u, v, torch.zeros_like(x_res), *a, **k)) if drop else orig)
+            sf = lambda s: m.block.joint_step(s, xin, si)
+            s = m.block.init_state(X.shape[0], xin.shape[1], xin.device, xin.dtype)
+            with torch.no_grad():
+                for _ in range(iters):
+                    s = s + (sf(s) - s)
+            out[key].append(eff_rank(s[1][0]))
+        attn.step = orig
+    return {"iters": iters, "n_seeds": n_seeds, "n_tokens": int(X.shape[1]),
+            "effective_rank": out}
+
+
 EXPERIMENTS = {
     "m1_gradient_fidelity": m1_gradient_fidelity,
     "m1b_fidelity_vs_contraction": m1b_fidelity_vs_contraction,
@@ -355,6 +404,7 @@ EXPERIMENTS = {
     "m4_adjoint_solver": m4_adjoint_solver,
     "m5_solver_cost": m5_solver_cost,
     "m6_token_convergence": m6_token_convergence,
+    "m7_rank_collapse": m7_rank_collapse,
 }
 
 

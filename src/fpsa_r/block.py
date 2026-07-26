@@ -23,8 +23,6 @@ implicit-differentiation machinery in ``implicit.py`` never has to know how many
 pieces the state has.
 """
 
-from typing import Optional, Tuple
-
 import torch
 import torch.nn as nn
 
@@ -132,9 +130,12 @@ class ReasoningBlock(nn.Module):
                 # A zero-initialised carry means "no inner state yet": start the
                 # inner loop from the layer input, as FPSA does.
                 u_in = torch.where(u.abs().sum(dim=-1, keepdim=True) > 0, u, xa)
-                u_next = layer.attn.step(u_in, v, cos_sin, attn_mask)
+                u_next = layer.attn.step(u_in, v, xa, cos_sin, attn_mask)
                 new_rows.append(u_next)
-                attn_out = u_next
+                # The inner state carries the layer input (see FPSAAttention.step);
+                # the block's own residual adds it back, so hand the block only
+                # the attention *update*.
+                attn_out = u_next - xa
             else:
                 attn_out = layer.attn(xa, cos_sin, attn_mask)
             h = layer.attn_and_mlp(h, attn_out, a1, b1)
@@ -162,7 +163,7 @@ class ReasoningBlock(nn.Module):
                 u0 = torch.where(u.abs().sum(dim=-1, keepdim=True) > 0, u, xa)
                 u_star, _ = layer.attn.solve(xa, cos_sin, attn_mask, u0=u0)
                 new_rows.append(u_star)
-                attn_out = u_star
+                attn_out = u_star - xa
             else:
                 attn_out = layer.attn(xa, cos_sin, attn_mask)
             h = layer.attn_and_mlp(h, attn_out, a1, b1)

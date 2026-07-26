@@ -9,7 +9,6 @@ import glob
 import json
 import os
 import statistics as st
-import sys
 from collections import defaultdict
 
 import matplotlib
@@ -372,8 +371,12 @@ def fig_gradient_fidelity(name="fig_gradient_fidelity"):
         ax2 = axes[0][1]
         kshades = {"trunc-BPTT K=1": "#B9C6CE", "trunc-BPTT K=2": "#8FA6B2",
                    "trunc-BPTT K=4": "#5C6B73", "trunc-BPTT K=8": "#2E86AB"}
+        import math as _m
         for k, v in d2["results"].items():
             ours = "implicit" in k
+            pts = [(x, y) for x, y in zip(v["rho"], v["rel"])
+                   if _m.isfinite(x) and _m.isfinite(y)]
+            v = {"rho": [p[0] for p in pts], "rel": [p[1] for p in pts]}
             ax2.plot(v["rho"], v["rel"], marker="o", ms=4,
                      lw=2.8 if ours else 1.5, ls="-" if ours else "--",
                      color=C["fpsa_r"] if ours else kshades.get(k, "#999999"),
@@ -525,6 +528,24 @@ def table_solver_cost():
                         f"calls and {d['modes']['speedup']['wall_clock']:.2f}x less wall clock.")
 
 
+def table_rank_collapse():
+    d = mech("m7_rank_collapse")
+    if not d:
+        return
+    a, b = d["effective_rank"]["with_residual"], d["effective_rank"]["without_residual"]
+    am, asd = mean_sd(a)
+    bm, bsd = mean_sd(b)
+    write_table("mech_rank_collapse",
+                ["Inner FPSA map", "effective rank of the fixed point", "of max"],
+                [[f"**u <- x + W_O A(u) V**  (FPSA-R)", f"**{am:.1f} ± {asd:.1f}**", d["n_tokens"]],
+                 ["u <- W_O A(u) V  (no in-loop residual)", f"{bm:.1f} ± {bsd:.1f}", d["n_tokens"]]],
+                caption=f"Effective rank (entropy of the singular-value spectrum) of the "
+                        f"converged inner attention state, {d['n_seeds']} random inits, "
+                        f"{d['iters']} iterations. Without the input re-injection the "
+                        f"row-stochastic attention operator averages tokens together and "
+                        f"the fixed point loses {100*(1-bm/am):.0f}% of its effective rank.")
+
+
 def fig_architecture(name="fig_architecture"):
     """Schematic of where the loop sits in each family of model."""
     fig, axes = plt.subplots(1, 3, figsize=(12.6, 3.6))
@@ -576,6 +597,7 @@ def main():
     table_gradient_fidelity()
     table_memory()
     table_solver_cost()
+    table_rank_collapse()
     fig_gradient_fidelity()
     fig_memory()
     fig_contraction()

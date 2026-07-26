@@ -118,7 +118,6 @@ def anderson_solve(vjp: Callable[[torch.Tensor], torch.Tensor], g: torch.Tensor,
     loop keep making progress for many steps.
     """
     shape = g.shape
-    flat = lambda t: t.reshape(-1)
     x0 = g.reshape(-1)
     f0 = (vjp(g) + g).reshape(-1)
     if mask is not None:
