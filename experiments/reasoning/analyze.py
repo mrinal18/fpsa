@@ -161,10 +161,13 @@ def task_tables(runs, tag, order):
                 f"{tag}_{task}",
                 ["Model", "Params", "Token acc (%)", "Exact match (%)",
                  "Act. mem (MB)", "s / step", "Eval iters", "rho", "seeds"],
-                rows, caption=f"{task}: mean ± sd over seeds. "
-                              f"Activation memory is bytes autograd stores for one "
-                              f"training step; rho is the measured spectral radius "
-                              f"of the update map at the solution."))
+                rows, caption=f"{task}: mean ± sd over seeds. Activation memory is "
+                              f"bytes autograd stores for one training step, and here "
+                              f"*includes* the contraction regulariser's two extra "
+                              f"single-step graphs for the fixed-point architectures "
+                              f"-- see the mechanism table for the differentiation "
+                              f"scheme in isolation. rho is the measured spectral "
+                              f"radius of the update map at the solution."))
     return out
 
 
