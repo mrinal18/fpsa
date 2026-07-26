@@ -703,6 +703,52 @@ def table_solver_range():
                         f"Mean over {d['n_seeds']} inits.")
 
 
+def fig_faithfulness(name="fig_gradient_faithfulness"):
+    """Where the implicit gradient stops being the gradient, and how the two
+    ways of buying contractivity compare at matched rho."""
+    d = mech("m9_gradient_faithfulness_vs_rho")
+    if not d:
+        return
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(10.8, 3.9))
+    series = [("with_caps", "hard per-layer spectral caps", "#2E86AB", "--"),
+              ("no_caps", "no caps, rho-target penalty only", C["fpsa_r"], "-")]
+    for k, lbl, col, ls in series:
+        rows = d["results"][k]
+        ax.plot([r["rho"] for r in rows], [r["cos"] for r in rows], marker="o",
+                ms=4, lw=2.4 if ls == "-" else 1.6, ls=ls, color=col, label=lbl)
+        ax2.plot([r["rho"] for r in rows], [min(r["rel"], 1e3) for r in rows],
+                 marker="o", ms=4, lw=2.4 if ls == "-" else 1.6, ls=ls, color=col,
+                 label=lbl)
+    for a, ttl, yl in ((ax, "Cosine against the exact gradient", "cosine similarity"),
+                       (ax2, "Relative gradient error", "relative error")):
+        a.axvline(1.0, color="#D1495B", ls=":", lw=1.4)
+        a.text(1.01, 0.03, r"$\rho=1$", transform=a.get_xaxis_transform(),
+               fontsize=8.5, color="#D1495B")
+        style(a, title=ttl, xlabel=r"measured spectral radius $\rho$", ylabel=yl)
+    ax.axhline(0.0, color="#BBBBBB", lw=0.9)
+    ax2.set_yscale("log")
+    save(fig, name)
+
+
+def table_faithfulness():
+    d = mech("m9_gradient_faithfulness_vs_rho")
+    if not d:
+        return
+    rows = []
+    for k, lbl in (("with_caps", "spectral caps"), ("no_caps", "no caps")):
+        for r in d["results"][k]:
+            rows.append([lbl, f"{r['rho']:.2f}", f"{r['forward_residual']:.1e}",
+                         f"{r['cos']:.5f}", f"{min(r['rel'], 1e3):.4f}"])
+    write_table("mech_gradient_faithfulness",
+                ["contractivity via", "rho", "forward residual",
+                 "cosine vs exact", "relative error"], rows,
+                caption=f"Implicit gradient against {d['reference']}, forward "
+                        f"budget {d['forward_iters']}. The gradient is faithful on "
+                        f"both sides of the comparison while rho < 1 and collapses "
+                        f"past it, so the caps are not what makes it valid -- the "
+                        f"spectral radius is.")
+
+
 def fig_architecture(name="fig_architecture"):
     """Schematic of where the loop sits in each family of model."""
     panels = [
@@ -763,6 +809,8 @@ def main():
     fig_contraction()
     fig_forward_budget()
     fig_solver_range()
+    fig_faithfulness()
+    table_faithfulness()
     table_solver_range()
     fig_adjoint()
     fig_token_convergence()

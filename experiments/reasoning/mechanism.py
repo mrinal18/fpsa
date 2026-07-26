@@ -463,7 +463,7 @@ def m7_rank_collapse(iters=40, n_seeds=5):
             "effective_rank": out}
 
 
-def m8_solver_range(alphas=(0.4, 0.55, 0.7, 0.8, 0.9, 0.95, 1.0), budget=64,
+def m8_solver_range(alphas=(0.4, 0.55, 0.7, 0.8, 0.9, 0.95, 0.99), budget=64,
                     tol=1e-4, n_seeds=2):
     """How far past rho = 1 does each solver keep working?
 
@@ -520,6 +520,61 @@ def m8_solver_range(alphas=(0.4, 0.55, 0.7, 0.8, 0.9, 0.95, 1.0), budget=64,
     return {"budget": budget, "tol": tol, "n_seeds": n_seeds, "rows": rows}
 
 
+def m9_gradient_faithfulness_vs_rho(alphas=(0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9),
+                                    T=32, ref_iters=300, n_seeds=2):
+    """Where does the implicit gradient stop being the gradient?
+
+    This is the experiment that decides how to buy contractivity, because it
+    separates two things that are easy to conflate:
+
+    * The **forward** solve tolerates rho > 1 -- Anderson acceleration finds
+      fixed points on maps that do not contract (see m8).
+    * The **gradient** does not. Past rho = 1 the equilibrium the solver lands
+      on is not the limit of the iteration, and the implicit gradient stops
+      agreeing with the exact one -- cosine similarity falls to roughly zero,
+      not merely to a worse-but-usable value.
+
+    So rho < 1 is a real requirement, and the design question is only *how* to
+    enforce it. We compare two ways at matched rho: hard per-layer spectral caps
+    (sigma <= 1 on every projection, the conservative sufficient condition) and
+    no caps at all, leaving the spectral-radius penalty to do the work. If both
+    give a faithful gradient at the same rho, the caps are buying nothing and
+    costing capacity.
+    """
+    t = _task(name="maze", n=128, size=7)
+    X, Y = t.train.x[:16], t.train.y[:16]
+    M = torch.ones_like(X, dtype=torch.bool)
+    out = {"with_caps": [], "no_caps": []}
+
+    for spec, key in ((True, "with_caps"), (False, "no_caps")):
+        for a in alphas:
+            cos, rel, rho_s, res = [], [], [], []
+            for seed in range(n_seeds):
+                base = dict(alpha_1_init=0.9, alpha_2_init=a, spectral_norm=spec)
+                ref, _ = _grad("deq_block", t, X, Y, M, seed, max_iter=ref_iters,
+                               max_iter_eval=ref_iters, grad_mode="bptt", **base)
+                arch = "deq_anderson_fwd" if spec else "deq_free_anderson"
+                g, m = _grad(arch, t, X, Y, M, seed, max_iter=T, max_iter_eval=T,
+                             **base)
+                cos.append(float(F.cosine_similarity(g, ref, dim=0)))
+                r = float((g - ref).norm() / ref.norm())
+                rel.append(r if r == r and r != float("inf") else 1e3)
+                m.eval()
+                xin = m._inputs(X[:4], None)
+                si = m._seq_info(xin.shape[1])
+                sf = lambda s: m.block.joint_step(s, xin, si)
+                s0 = m.block.init_state(4, xin.shape[1], xin.device, xin.dtype)
+                with torch.no_grad():
+                    s, inf = anderson_forward(sf, s0, T, 1e-4)
+                rho_s.append(empirical_spectral_radius(sf, s))
+                res.append(inf.rel_residual)
+            avg = lambda v: sum(v) / len(v)
+            out[key].append({"alpha": a, "rho": avg(rho_s), "cos": avg(cos),
+                             "rel": avg(rel), "forward_residual": avg(res)})
+    return {"forward_iters": T, "n_seeds": n_seeds,
+            "reference": f"exact BPTT through {ref_iters} steps", "results": out}
+
+
 EXPERIMENTS = {
     "m1_gradient_fidelity": m1_gradient_fidelity,
     "m1b_fidelity_vs_contraction": m1b_fidelity_vs_contraction,
@@ -531,6 +586,7 @@ EXPERIMENTS = {
     "m6_token_convergence": m6_token_convergence,
     "m7_rank_collapse": m7_rank_collapse,
     "m8_solver_range": m8_solver_range,
+    "m9_gradient_faithfulness_vs_rho": m9_gradient_faithfulness_vs_rho,
 }
 
 

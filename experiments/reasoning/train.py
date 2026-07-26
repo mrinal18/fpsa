@@ -202,10 +202,18 @@ def run(args) -> Dict:
         stepf = (model.block.nested_step if model.cfg.solver_mode == "nested"
                  else model.block.joint_step)
         step_fn = lambda s: stepf(s, xin, si)
-        s = model.block.init_state(xb.shape[0], xin.shape[1], xin.device, xin.dtype)
+        # Measure at the point *this model's own solver* reaches. Running Picard
+        # here regardless of cfg.forward_solver would evaluate the Jacobian
+        # somewhere the model never visits.
+        from src.fpsa_r.solvers import anderson_forward, broyden_solve, picard_solve
+        s0 = model.block.init_state(xb.shape[0], xin.shape[1], xin.device, xin.dtype)
         with torch.no_grad():
-            for _ in range(args.max_iter_eval):
-                s = s + (step_fn(s) - s)
+            if model.cfg.forward_solver == "broyden":
+                s, _ = broyden_solve(step_fn, s0, args.max_iter_eval, model.cfg.fp_thresh)
+            elif model.cfg.forward_solver == "anderson":
+                s, _ = anderson_forward(step_fn, s0, args.max_iter_eval, model.cfg.fp_thresh)
+            else:
+                s, _ = picard_solve(step_fn, s0, args.max_iter_eval, model.cfg.fp_thresh)
         rho = empirical_spectral_radius(step_fn, s)
     except Exception:  # diagnostics must never sink a run
         rho = float("nan")

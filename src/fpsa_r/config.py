@@ -139,6 +139,11 @@ ARCH_PRESETS = {
                               forward_solver="anderson", backward_solver="gmres",
                               spectral_norm=False, contraction_target=1.0),
 
+    # Does the in-layer attention loop help once the caps are gone?
+    "fpsa_free_anderson": dict(fpsa=True, solver_mode="joint", grad_mode="implicit",
+                               forward_solver="anderson", backward_solver="gmres",
+                               spectral_norm=False, contraction_target=1.0),
+
     # --- baselines ---
     "deq_block": dict(fpsa=False, grad_mode="implicit"),      # implicit diff, no in-layer FPSA
     "fprm": dict(fpsa=False, grad_mode="trunc_bptt"),         # FPRM: damped FP + truncated BPTT

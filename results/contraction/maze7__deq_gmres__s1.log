@@ -1,0 +1,18 @@
+[deq_gmres/maze/s1] step   250 loss 0.1639 tok 93.95 em 19.92 it 21.8
+[deq_gmres/maze/s1] step   500 loss 0.0809 tok 96.70 em 55.27 it 32.0
+[deq_gmres/maze/s1] step   750 loss 0.0353 tok 98.03 em 74.61 it 32.0
+[deq_gmres/maze/s1] step  1000 loss 0.0252 tok 97.98 em 79.30 it 32.0
+{
+ "arch": "deq_gmres",
+ "task": "maze",
+ "seed": 1,
+ "params": 135558,
+ "activation_mb": 56.631683349609375,
+ "step_time_s": 0.5149458249409994,
+ "final": {
+  "token_acc": 97.9751275510204,
+  "exact_match": 79.296875,
+  "mean_iters": 32.0,
+  "mean_residual": 0.1538024286273867
+ }
+}
