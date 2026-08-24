@@ -8,7 +8,7 @@ repeated by the fixed-point solver.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 
 @dataclass
@@ -27,7 +27,7 @@ class FPSAPrimeConfig:
     input_expansion: float = 2.0
     output_expansion: float = 2.0
     use_input_mlp: bool = True
-    use_output_mlp: bool = True
+    use_output_mlp: bool = False
     dropout: float = 0.0
 
     # Position and structural bias
@@ -45,6 +45,13 @@ class FPSAPrimeConfig:
     scratch_gate_init: float = 0.20
     output_init_std: float = 0.02
 
+    # Soft local stability control.  This regularises the measured Jacobian
+    # feedback near solved states instead of hard-capping Q/K/O projections.
+    stability_weight: float = 0.0
+    stability_target: float = 0.95
+    stability_power_steps: int = 1
+    stability_fd_eps: float = 1e-3
+
     # Forward equilibrium solver. Damping belongs to the numerical solver, not
     # the architectural fixed-point equation R = Phi(R; A).
     forward_solver: Literal["picard", "anderson"] = "anderson"
@@ -60,8 +67,14 @@ class FPSAPrimeConfig:
     anderson_lam: float = 1e-4
     init_std: float = 0.0
 
-    # Gradient through the equilibrium
-    grad_mode: Literal["implicit", "bptt", "one_step"] = "implicit"
+    # Forward semantics and gradient semantics are separate.  In particular, a
+    # fixed-unroll BPTT model must be evaluated with the same fixed-unroll
+    # computation rather than silently switching to an equilibrium solver.
+    forward_mode: Literal["equilibrium", "fixed_unroll"] = "equilibrium"
+    backward_mode: Literal["implicit", "bptt", "one_step"] = "implicit"
+    # Deprecated compatibility alias.  ``grad_mode="bptt"`` maps to
+    # forward_mode="fixed_unroll", backward_mode="bptt".
+    grad_mode: Optional[Literal["implicit", "bptt", "one_step"]] = None
     backward_solver: Literal["gmres", "neumann"] = "gmres"
     backward_max_iter: int = 40
     backward_tol: float = 1e-5
@@ -79,6 +92,15 @@ class FPSAPrimeConfig:
     require_backward_convergence: bool = True
 
     def __post_init__(self) -> None:
+        if self.grad_mode is not None:
+            # Preserve old experiment configs while removing the train/eval
+            # semantic mismatch that the overloaded field created.
+            self.backward_mode = self.grad_mode
+            if self.grad_mode == "bptt":
+                self.forward_mode = "fixed_unroll"
+            else:
+                self.forward_mode = "equilibrium"
+
         valid_options = {
             "value_mode": ({"dual", "evidence", "scratch"}, self.value_mode),
             "position_encoding": (
@@ -86,12 +108,17 @@ class FPSAPrimeConfig:
                 self.position_encoding,
             ),
             "forward_solver": ({"picard", "anderson"}, self.forward_solver),
-            "grad_mode": ({"implicit", "bptt", "one_step"}, self.grad_mode),
+            "forward_mode": ({"equilibrium", "fixed_unroll"}, self.forward_mode),
+            "backward_mode": ({"implicit", "bptt", "one_step"}, self.backward_mode),
             "backward_solver": ({"gmres", "neumann"}, self.backward_solver),
         }
         for name, (allowed, value) in valid_options.items():
             if value not in allowed:
                 raise ValueError(f"invalid {name}={value!r}; choose from {sorted(allowed)}")
+        if self.forward_mode == "fixed_unroll" and self.backward_mode != "bptt":
+            raise ValueError("fixed_unroll forward mode requires bptt backward mode")
+        if self.forward_mode == "equilibrium" and self.backward_mode == "bptt":
+            raise ValueError("equilibrium forward mode does not support bptt backward mode")
         if self.vocab_size <= 0 or self.out_vocab_size < 0:
             raise ValueError("vocabulary sizes must be positive (or zero for tied output)")
         if self.max_seq_len <= 0:
@@ -125,6 +152,12 @@ class FPSAPrimeConfig:
                 raise ValueError(f"{name} must be in (0, 1)")
         if self.output_init_std <= 0:
             raise ValueError("output_init_std must be positive")
+        if self.stability_weight < 0:
+            raise ValueError("stability_weight cannot be negative")
+        if self.stability_target <= 0:
+            raise ValueError("stability_target must be positive")
+        if self.stability_power_steps <= 0 or self.stability_fd_eps <= 0:
+            raise ValueError("stability power steps and finite-difference epsilon must be positive")
         if not 0.0 < self.solver_damping <= 1.0:
             raise ValueError("solver_damping must be in (0, 1]")
         if not 0.0 < self.min_damping <= self.solver_damping:
@@ -172,11 +205,63 @@ class FPSAPrimeConfig:
 
 
 ARCH_PRESETS = {
-    "fpsa_prime": dict(value_mode="dual", grad_mode="implicit"),
-    "fpsa_fixed_v": dict(value_mode="evidence", grad_mode="implicit"),
-    "fpsa_dynamic_v": dict(value_mode="scratch", grad_mode="implicit"),
-    "fpsa_prime_bptt": dict(value_mode="dual", grad_mode="bptt"),
-    "fpsa_prime_one_step": dict(value_mode="dual", grad_mode="one_step"),
+    # Parameter-matched hero: one nonlinear encoder MLP, no post-equilibrium
+    # decoder MLP.  At d=128 this is within 1% of the 135,558-parameter
+    # block-DEQ control used by the Maze experiments.
+    "fpsa_prime": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    "fpsa_fixed_v": dict(
+        value_mode="evidence",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    "fpsa_dynamic_v": dict(
+        value_mode="scratch",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    # Matched decoder-only control: same parameter budget, but the one-time MLP
+    # is after the equilibrium instead of before it.
+    "fpsa_prime_decoder_mlp": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=False,
+        use_output_mlp=True,
+    ),
+    # Capacity control retaining the original two one-time MLPs.
+    "fpsa_prime_full": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=True,
+    ),
+    # Finite-unroll control.  The same damped T-step recurrence is used in both
+    # training and evaluation; it never silently switches to Anderson at eval.
+    "fpsa_prime_bptt": dict(
+        value_mode="dual",
+        forward_mode="fixed_unroll",
+        backward_mode="bptt",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    "fpsa_prime_one_step": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="one_step",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
 }
 
 
