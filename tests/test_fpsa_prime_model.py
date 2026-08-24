@@ -67,6 +67,7 @@ def _tiny_kwargs(**extra):
     values.update(extra)
     return values
 
+
 def test_implicit_gradient_matches_deep_unrolling():
     torch.manual_seed(4)
     inputs = torch.randint(0, 10, (2, 9))
@@ -105,6 +106,7 @@ def test_implicit_gradient_matches_deep_unrolling():
     assert cosine > 0.999, cosine
     assert relative < 0.03, relative
 
+
 def test_forward_returns_the_numerical_fixed_point_not_one_more_map_step():
     torch.manual_seed(5)
     model = build_model("fpsa_prime", **_tiny_kwargs())
@@ -116,6 +118,7 @@ def test_forward_returns_the_numerical_fixed_point_not_one_more_map_step():
     assert context is not None and isinstance(residual, torch.Tensor)
     mapped = model.attention.fixed_map(residual.detach(), context)
     assert torch.allclose(residual.detach(), mapped, atol=2e-5, rtol=2e-5)
+
 
 def test_one_step_ablation_preserves_the_numerical_forward_value():
     torch.manual_seed(6)
@@ -129,6 +132,7 @@ def test_one_step_ablation_preserves_the_numerical_forward_value():
     output_one = one_step(inputs)
     assert torch.equal(output_implicit["residual"], output_one["residual"])
     assert torch.equal(output_implicit["logits"], output_one["logits"])
+
 
 def test_structural_relations_masks_and_global_slots_are_valid():
     sudoku = sudoku_relation_ids()
@@ -170,6 +174,7 @@ def test_structural_relations_masks_and_global_slots_are_valid():
     assert padded_bias[0, 0, 0, -1] == 0
     assert torch.isneginf(padded_bias[0, 0, 2, 7])
 
+
 def test_fully_masked_attention_row_is_rejected():
     cfg = FPSAPrimeConfig(**_tiny_kwargs())
     attention = DualBankFixedPointAttention(cfg)
@@ -183,6 +188,7 @@ def test_fully_masked_attention_row_is_rejected():
     else:
         raise AssertionError("fully masked attention row was accepted")
 
+
 def test_batched_relation_bias_is_differentiable():
     torch.manual_seed(7)
     cfg = FPSAPrimeConfig(**_tiny_kwargs(num_relation_types=3))
@@ -195,3 +201,70 @@ def test_batched_relation_bias_is_differentiable():
     assert attention.relation_bias is not None
     assert attention.relation_bias.grad is not None
     assert torch.isfinite(attention.relation_bias.grad).all()
+
+
+def test_bptt_uses_the_same_fixed_unroll_in_training_and_evaluation():
+    torch.manual_seed(125)
+    model = build_model(
+        "fpsa_prime_bptt",
+        **_tiny_kwargs(
+            max_iter=7,
+            max_iter_eval=7,
+            fp_tol=1e-12,
+            require_convergence=True,
+        ),
+    )
+    inputs = torch.randint(0, 10, (2, 9))
+    model.train()
+    train_output = model(inputs)
+    train_residual = train_output["residual"].detach()
+    train_logits = train_output["logits"].detach()
+
+    model.eval()
+    with torch.no_grad():
+        eval_output = model(inputs)
+    assert model.cfg.forward_mode == "fixed_unroll"
+    assert model.cfg.backward_mode == "bptt"
+    assert eval_output["info"].n_iters == 7
+    assert torch.equal(train_residual, eval_output["residual"])
+    assert torch.equal(train_logits, eval_output["logits"])
+
+
+def test_fixed_unroll_does_not_claim_or_require_equilibrium_convergence():
+    model = build_model(
+        "fpsa_prime_bptt",
+        **_tiny_kwargs(
+            max_iter=1,
+            max_iter_eval=1,
+            fp_tol=1e-12,
+            require_convergence=True,
+        ),
+    )
+    model.eval()
+    inputs = torch.randint(0, 10, (1, 9))
+    with torch.no_grad():
+        output = model(inputs)
+    assert output["info"].n_iters == 1
+    assert output["info"].converged_frac < 1.0
+
+
+def test_model_exposes_differentiable_soft_stability_control_when_enabled():
+    torch.manual_seed(126)
+    model = build_model(
+        "fpsa_prime",
+        **_tiny_kwargs(
+            stability_weight=1.0,
+            stability_target=0.05,
+            stability_power_steps=1,
+            stability_fd_eps=1e-3,
+        ),
+    )
+    model.train()
+    output = model(torch.randint(0, 10, (2, 9)))
+    stability_loss = output["stability_loss"]
+    estimate = output["stability_estimate"]
+    assert isinstance(stability_loss, torch.Tensor)
+    assert isinstance(estimate, torch.Tensor)
+    assert stability_loss.requires_grad
+    assert torch.isfinite(stability_loss)
+    assert torch.isfinite(estimate).all()
