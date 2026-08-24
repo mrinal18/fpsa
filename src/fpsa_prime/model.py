@@ -13,6 +13,7 @@ from .attention import DualBankFixedPointAttention, FPSAContext
 from .config import FPSAPrimeConfig, build_config
 from .implicit import solve_equilibrium
 from .layers import RMSNorm, RotaryEmbedding, SwiGLU
+from .stability import local_jacobian_spectral_penalty
 
 
 class FPSAPrimeReasoner(nn.Module):
@@ -167,6 +168,20 @@ class FPSAPrimeReasoner(nn.Module):
         logits = self.lm_head(hidden)
         return logits[:, self.cfg.num_global_slots :]
 
+    def local_stability_penalty(
+        self, residual: torch.Tensor, context: FPSAContext
+    ) -> dict[str, torch.Tensor]:
+        """Measure and softly penalise local recurrent feedback gain."""
+        detached_context = self._detached_context(context)
+        fixed_map = lambda state: self.attention.fixed_map(state, detached_context)
+        return local_jacobian_spectral_penalty(
+            fixed_map,
+            residual.detach(),
+            target=self.cfg.stability_target,
+            power_steps=self.cfg.stability_power_steps,
+            epsilon=self.cfg.stability_fd_eps,
+        )
+
     def forward(
         self,
         tokens: torch.Tensor,
@@ -221,6 +236,11 @@ class FPSAPrimeReasoner(nn.Module):
             output["learned_energy"] = F.softplus(
                 self.verifier_head(hidden.mean(dim=1))
             ).squeeze(-1)
+        if self.training and self.cfg.stability_weight > 0:
+            stability = self.local_stability_penalty(residual, context)
+            output["stability_loss"] = stability["loss"]
+            output["stability_estimate"] = stability["estimate"]
+            output["stability_max_estimate"] = stability["max_estimate"]
         return output
 
     @torch.no_grad()
