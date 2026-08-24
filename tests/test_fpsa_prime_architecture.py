@@ -67,10 +67,12 @@ def _tiny_kwargs(**extra):
     values.update(extra)
     return values
 
+
 def test_safe_defaults_require_forward_and_backward_convergence():
     config = FPSAPrimeConfig()
     assert config.require_convergence
     assert config.require_backward_convergence
+
 
 def test_invalid_runtime_enum_is_rejected():
     try:
@@ -79,6 +81,7 @@ def test_invalid_runtime_enum_is_rejected():
         assert "value_mode" in str(error)
     else:
         raise AssertionError("invalid value_mode was accepted")
+
 
 def test_strict_forward_rejects_an_unconverged_state():
     model = build_model(
@@ -98,6 +101,7 @@ def test_strict_forward_rejects_an_unconverged_state():
     else:
         raise AssertionError("strict equilibrium mode accepted an unconverged solve")
 
+
 def test_only_attention_is_recurrent():
     model = build_model("fpsa_prime", **_tiny_kwargs())
     recurrent_parameters = {name for name, _ in model.attention.named_parameters()}
@@ -108,6 +112,7 @@ def test_only_attention_is_recurrent():
     )
     assert model.input_mlp is None and model.output_mlp is None
 
+
 def test_value_bank_presets_are_wired_correctly():
     dual = build_model("fpsa_prime", **_tiny_kwargs()).attention
     fixed = build_model("fpsa_fixed_v", **_tiny_kwargs()).attention
@@ -115,6 +120,7 @@ def test_value_bank_presets_are_wired_correctly():
     assert dual.W_V_evidence is not None and dual.W_V_scratch is not None
     assert fixed.W_V_evidence is not None and fixed.W_V_scratch is None
     assert dynamic.W_V_evidence is None and dynamic.W_V_scratch is not None
+
 
 def test_evidence_values_are_frozen_while_scratch_values_evolve():
     torch.manual_seed(0)
@@ -130,3 +136,46 @@ def test_evidence_values_are_frozen_while_scratch_values_evolve():
     output_random = attention.fixed_map(residual_random, context)
     assert torch.equal(context.evidence_values, frozen_before)
     assert not torch.allclose(output_zero, output_random)
+
+
+def test_default_hero_is_parameter_matched_and_full_model_is_explicit():
+    control_params = 135_558
+    hero = build_model(
+        "fpsa_prime",
+        vocab_size=4,
+        out_vocab_size=2,
+        max_seq_len=49,
+        hidden_size=128,
+        num_heads=8,
+        num_relation_types=len(MAZE_RELATIONS),
+    )
+    decoder = build_model(
+        "fpsa_prime_decoder_mlp",
+        vocab_size=4,
+        out_vocab_size=2,
+        max_seq_len=49,
+        hidden_size=128,
+        num_heads=8,
+        num_relation_types=len(MAZE_RELATIONS),
+    )
+    full = build_model(
+        "fpsa_prime_full",
+        vocab_size=4,
+        out_vocab_size=2,
+        max_seq_len=49,
+        hidden_size=128,
+        num_heads=8,
+        num_relation_types=len(MAZE_RELATIONS),
+    )
+    assert hero.cfg.use_input_mlp and not hero.cfg.use_output_mlp
+    assert not decoder.cfg.use_input_mlp and decoder.cfg.use_output_mlp
+    assert full.cfg.use_input_mlp and full.cfg.use_output_mlp
+    assert abs(hero.n_params() - control_params) / control_params < 0.01
+    assert hero.n_params() == decoder.n_params()
+    assert full.n_params() > 1.45 * control_params
+
+
+def test_legacy_bptt_alias_maps_to_explicit_forward_and_backward_modes():
+    config = FPSAPrimeConfig(grad_mode="bptt")
+    assert config.forward_mode == "fixed_unroll"
+    assert config.backward_mode == "bptt"
