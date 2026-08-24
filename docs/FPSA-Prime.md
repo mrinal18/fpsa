@@ -131,6 +131,10 @@ The 24 tests cover:
 10. verifier behavior, particle-energy requirements, and converged-only selection;
 11. deterministic evaluation, invalid-configuration rejection, and finite training.
 
+The source snapshot used to populate this branch passes all 24 tests on CPU.
+That validates the mathematical and plumbing invariants above, but it is not a
+substitute for GPU benchmark training or multi-seed accuracy evaluation.
+
 ## 8. Starter experiment
 
 From the repository root:
