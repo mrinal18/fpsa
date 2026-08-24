@@ -67,6 +67,7 @@ def _tiny_kwargs(**extra):
     values.update(extra)
     return values
 
+
 def test_solver_damping_does_not_change_the_fixed_point():
     torch.manual_seed(0)
     matrix = torch.randn(8, 8) * 0.03
@@ -99,6 +100,7 @@ def test_solver_damping_does_not_change_the_fixed_point():
     assert full_info.rel_residual < 1e-7
     assert damped_info.rel_residual < 1e-7
     assert torch.allclose(full, damped, atol=2e-6, rtol=2e-6)
+
 
 def test_anderson_solves_each_batch_item_independently():
     torch.manual_seed(1)
@@ -139,6 +141,7 @@ def test_anderson_solves_each_batch_item_independently():
     assert info.rel_residual < 1e-6
     assert torch.allclose(together, separate, atol=2e-5, rtol=2e-5)
 
+
 def test_gmres_keeps_truncated_batch_adjoints_independent():
     torch.manual_seed(3)
     jacobians = torch.randn(3, 6, 6) * 0.08
@@ -169,6 +172,7 @@ def test_gmres_keeps_truncated_batch_adjoints_independent():
         separate.append(solved)
     separate = torch.cat(separate, dim=0)
     assert torch.allclose(together, separate, atol=2e-6, rtol=2e-6)
+
 
 def test_strict_backward_rejects_an_inexact_adjoint():
     torch.manual_seed(12)
@@ -210,6 +214,7 @@ def test_strict_backward_rejects_an_inexact_adjoint():
     else:
         raise AssertionError("strict backward accepted an inexact adjoint")
 
+
 def test_attractor_margin_repels_high_energy_fixed_points():
     scale = torch.tensor(0.5, requires_grad=True)
     residual = torch.tensor([[[0.2]], [[0.4]]])
@@ -226,6 +231,7 @@ def test_attractor_margin_repels_high_energy_fixed_points():
     assert torch.isfinite(result["loss"])
     assert scale.grad is not None and torch.isfinite(scale.grad)
     assert scale.grad.abs() > 0
+
 
 def test_implicit_gradient_matches_exact_linear_fixed_point():
     torch.manual_seed(2)
@@ -267,3 +273,109 @@ def test_implicit_gradient_matches_exact_linear_fixed_point():
     assert info.rel_residual < 1e-10
     assert torch.allclose(anchor.grad, expected_anchor_grad, atol=1e-9, rtol=1e-9)
     assert torch.allclose(gain.grad, expected_gain_grad, atol=1e-9, rtol=1e-9)
+
+
+def test_gmres_long_restart_matches_direct_solve_and_stops_early():
+    """Production-shaped regression for the v0 long-basis failure.
+
+    The old solver reached a good residual at a short Krylov depth, continued to
+    the full restart width, and returned a much worse solution.  A larger budget
+    must not destroy an already-converged iterate.
+    """
+    torch.manual_seed(123)
+    batch, dimension = 6, 32
+    jacobians = torch.zeros(batch, dimension, dimension)
+    for index in range(batch):
+        jacobians[index].diagonal().fill_(0.10)
+        jacobians[index].diagonal(1).fill_(0.25)
+        jacobians[index] += 0.003 * torch.randn(dimension, dimension)
+    rhs = torch.randn(batch, 4, 8)
+
+    def vjp(vector):
+        flat = vector.reshape(batch, dimension)
+        return torch.einsum(
+            "bij,bj->bi", jacobians.transpose(1, 2), flat
+        ).reshape_as(vector)
+
+    short, short_iters, short_rel = gmres_solve(
+        vjp, rhs, max_iter=40, tol=1e-6, restart=20
+    )
+    long, long_iters, long_rel = gmres_solve(
+        vjp, rhs, max_iter=200, tol=1e-6, restart=20
+    )
+    system = (
+        torch.eye(dimension).expand(batch, dimension, dimension)
+        - jacobians.transpose(1, 2)
+    )
+    exact = torch.linalg.solve(
+        system, rhs.reshape(batch, dimension, 1)
+    ).reshape_as(rhs)
+
+    relative_error = (
+        (short - exact).reshape(batch, -1).norm(dim=1)
+        / exact.reshape(batch, -1).norm(dim=1).clamp_min(1e-12)
+    )
+    assert short_rel < 1e-6
+    assert long_rel < 1e-6
+    assert short_iters < 20
+    assert long_iters == short_iters
+    assert relative_error.max() < 2e-6
+    assert torch.allclose(short, long, atol=2e-6, rtol=2e-6)
+
+
+def test_gmres_long_batched_solve_matches_individual_solves():
+    torch.manual_seed(124)
+    batch, dimension = 5, 24
+    jacobians = torch.randn(batch, dimension, dimension) * 0.025
+    jacobians += 0.08 * torch.eye(dimension).unsqueeze(0)
+    rhs = torch.randn(batch, 3, 8)
+
+    def batched_vjp(vector):
+        flat = vector.reshape(batch, dimension)
+        return torch.einsum(
+            "bij,bj->bi", jacobians.transpose(1, 2), flat
+        ).reshape_as(vector)
+
+    together, _, together_rel = gmres_solve(
+        batched_vjp, rhs, max_iter=40, tol=1e-7, restart=12
+    )
+    separate = []
+    for index in range(batch):
+        matrix = jacobians[index]
+
+        def single_vjp(vector, matrix=matrix):
+            flat = vector.reshape(1, dimension)
+            return (flat @ matrix).reshape_as(vector)
+
+        solved, _, rel = gmres_solve(
+            single_vjp,
+            rhs[index : index + 1],
+            max_iter=40,
+            tol=1e-7,
+            restart=12,
+        )
+        assert rel < 1e-7
+        separate.append(solved)
+    separate = torch.cat(separate, dim=0)
+    assert together_rel < 1e-7
+    assert torch.allclose(together, separate, atol=3e-6, rtol=3e-6)
+
+
+def test_local_stability_penalty_tracks_linear_spectral_norm():
+    from src.fpsa_prime.stability import local_jacobian_spectral_penalty
+
+    gain = torch.tensor(0.70, requires_grad=True)
+    state = torch.randn(3, 4, 5)
+    result = local_jacobian_spectral_penalty(
+        lambda value: gain * value,
+        state,
+        target=0.60,
+        power_steps=2,
+        epsilon=1e-3,
+    )
+    assert torch.allclose(
+        result["estimate"], torch.full((3,), 0.70), atol=2e-4, rtol=2e-4
+    )
+    assert result["loss"] > 0
+    result["loss"].backward()
+    assert gain.grad is not None and gain.grad > 0
