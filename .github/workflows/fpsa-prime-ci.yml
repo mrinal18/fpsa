@@ -39,11 +39,12 @@ jobs:
       - name: Run correctness suite
         run: |
           python -m pytest tests/test_fpsa_prime_*.py -q
-      - name: Run numerical verification harness
+      - name: Run numerical verification and tiny training smoke
         run: |
           python -m experiments.fpsa_prime.verification \
             --output_dir results/verification_ci \
-            --skip_tests
+            --skip_tests \
+            --run_training
       - name: Upload verification tables and plots
         uses: actions/upload-artifact@v4
         with:
