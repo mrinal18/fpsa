@@ -1,4 +1,4 @@
-"""Implicit differentiation for the single FPSA-Prime attention equilibrium."""
+"""Forward semantics and implicit differentiation for FPSA-Prime."""
 
 from __future__ import annotations
 
@@ -112,6 +112,12 @@ def _unrolled_solve(
     tol: float,
     record_trace: bool,
 ) -> tuple[torch.Tensor, SolverInfo]:
+    """Run exactly ``max_iter`` damped recurrence steps.
+
+    This is a finite-depth recurrent model, not an equilibrium solver.  It is
+    intentionally used unchanged in train and eval whenever
+    ``forward_mode='fixed_unroll'``.
+    """
     state = initial
     trace = []
     for _ in range(max_iter):
@@ -142,6 +148,18 @@ def _unrolled_solve(
     return state, info
 
 
+def _resolved_modes(cfg) -> tuple[str, str]:
+    """Read new fields while accepting pre-split legacy test configs."""
+    legacy = getattr(cfg, "grad_mode", None)
+    forward_mode = getattr(cfg, "forward_mode", None)
+    backward_mode = getattr(cfg, "backward_mode", None)
+    if forward_mode is None:
+        forward_mode = "fixed_unroll" if legacy == "bptt" else "equilibrium"
+    if backward_mode is None:
+        backward_mode = legacy or "implicit"
+    return forward_mode, backward_mode
+
+
 def solve_equilibrium(
     fixed_map: Callable[[torch.Tensor], torch.Tensor],
     initial: torch.Tensor,
@@ -152,20 +170,52 @@ def solve_equilibrium(
     record_trace: bool = False,
     require_convergence: Optional[bool] = None,
 ) -> tuple[torch.Tensor, SolverInfo]:
-    budget = (cfg.max_iter if training else cfg.max_iter_eval) if max_iter is None else max_iter
+    """Execute the configured forward computation and attach its gradient path.
+
+    ``forward_mode`` decides the actual computation in both training and eval:
+
+    * ``equilibrium``: solve ``R = Phi(R)`` with Picard or Anderson.
+    * ``fixed_unroll``: run exactly T damped recurrence steps.
+
+    ``backward_mode`` decides only how gradients are computed.  This split
+    prevents the old BPTT arm from training on a finite Picard trajectory and
+    silently evaluating at an Anderson fixed point.
+    """
+    budget = (
+        cfg.max_iter if training else cfg.max_iter_eval
+    ) if max_iter is None else max_iter
     if budget <= 0:
         raise ValueError("max_iter must be positive")
-    mode = cfg.grad_mode if training else "eval"
 
-    if mode == "bptt":
-        return _unrolled_solve(
-            fixed_map,
-            initial,
-            max_iter=budget,
-            damping=cfg.solver_damping,
-            tol=cfg.fp_tol,
-            record_trace=record_trace,
-        )
+    forward_mode, backward_mode = _resolved_modes(cfg)
+
+    if forward_mode == "fixed_unroll":
+        if backward_mode != "bptt":
+            raise ValueError("fixed_unroll forward mode requires bptt backward mode")
+        if training and torch.is_grad_enabled():
+            return _unrolled_solve(
+                fixed_map,
+                initial,
+                max_iter=budget,
+                damping=cfg.solver_damping,
+                tol=cfg.fp_tol,
+                record_trace=record_trace,
+            )
+        with torch.no_grad():
+            state, info = _unrolled_solve(
+                fixed_map,
+                initial,
+                max_iter=budget,
+                damping=cfg.solver_damping,
+                tol=cfg.fp_tol,
+                record_trace=record_trace,
+            )
+        return state.detach(), info
+
+    if forward_mode != "equilibrium":
+        raise ValueError(f"unknown forward mode {forward_mode!r}")
+    if backward_mode == "bptt":
+        raise ValueError("equilibrium forward mode does not support bptt backward mode")
 
     with torch.no_grad():
         if cfg.forward_solver == "picard":
@@ -210,12 +260,12 @@ def solve_equilibrium(
         return fixed, info
 
     mapped = fixed_map(fixed)
-    if mode == "one_step":
+    if backward_mode == "one_step":
         # Keep the numerical forward value equal to the solver output while
         # using one application of Phi as the phantom-gradient path.
         return fixed + (mapped - mapped.detach()), info
-    if mode != "implicit":
-        raise ValueError(f"unknown gradient mode {mode!r}")
+    if backward_mode != "implicit":
+        raise ValueError(f"unknown backward mode {backward_mode!r}")
 
     output = _ImplicitFixedPoint.apply(
         fixed,
