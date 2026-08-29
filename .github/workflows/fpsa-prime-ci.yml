@@ -39,12 +39,18 @@ jobs:
       - name: Run correctness suite
         run: |
           python -m pytest tests/test_fpsa_prime_*.py -q
-      - name: Run numerical verification and tiny training smoke
+      - name: Run portable numerical verification and tiny training smoke
         run: |
-          python -m experiments.fpsa_prime.verification \
-            --output_dir results/verification_ci \
-            --skip_tests \
-            --run_training
+          python - <<'PY'
+          from experiments.fpsa_prime.verification_portable import run_verification
+          run_verification(
+              output_dir="results/verification_ci",
+              device="cpu",
+              quick=True,
+              run_tests=False,
+              run_training=True,
+          )
+          PY
       - name: Upload verification tables and plots
         uses: actions/upload-artifact@v4
         with:
