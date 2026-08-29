@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 
-from . import verification as base
+from . import verification_core as base
 from src.fpsa_prime.solvers import gmres_solve
 
 _LAST_GMRES_METADATA: dict[str, object] = {}
@@ -103,9 +103,9 @@ def gmres_check(
     if not legacy_degradation_observed:
         warnings.warn(
             "The legacy v0 GMRES did not reproduce the seeded >100x long-basis "
-            "degradation on this runtime. This is expected to be device/library "
-            "dependent and is not a failure of the corrected solver. Inspect the "
-            "recorded table and fixed-solver checks instead.",
+            "degradation on this runtime. This is device/library dependent and "
+            "is not a failure of the corrected solver. Inspect the recorded "
+            "table and fixed-solver checks instead.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -164,6 +164,18 @@ def run_verification(**kwargs) -> dict[str, object]:
         json.dumps(summary, indent=2)
     )
     return summary
+
+
+if __name__ == "__main__":
+    args = base.parser().parse_args()
+    result = run_verification(
+        output_dir=args.output_dir,
+        device=args.device,
+        quick=not args.full,
+        run_tests=not args.skip_tests,
+        run_training=args.run_training,
+    )
+    print(json.dumps(result, indent=2))
 
 
 __all__ = ["gmres_check", "run_verification"]
