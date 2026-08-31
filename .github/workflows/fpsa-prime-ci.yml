@@ -51,6 +51,29 @@ jobs:
               run_training=True,
           )
           PY
+      - name: Run public controlled-comparison entry point
+        run: |
+          python -m experiments.fpsa_prime.controlled_compare \
+            --family prime \
+            --arch fpsa_prime \
+            --task maze \
+            --maze_size 5 \
+            --extra_sizes \
+            --device cpu \
+            --seed 0 \
+            --n_train 32 \
+            --n_test 16 \
+            --steps 3 \
+            --batch_size 8 \
+            --hidden 32 \
+            --heads 4 \
+            --max_iter 16 \
+            --max_iter_eval 32 \
+            --train_max_iter_ceiling 64 \
+            --eval_max_iter_ceiling 64 \
+            --stability_power_steps 1 \
+            --eval_every 1 \
+            --output results/verification_ci/controlled_compare_smoke.json
       - name: Upload verification tables and plots
         uses: actions/upload-artifact@v4
         with:
