@@ -1,0 +1,83 @@
+name: FPSA-Prime correctness
+
+on:
+  pull_request:
+    paths:
+      - "src/fpsa_prime/**"
+      - "experiments/fpsa_prime/**"
+      - "notebooks/FPSA_Prime_Verification.ipynb"
+      - "tests/test_fpsa_prime_*.py"
+      - ".github/workflows/fpsa-prime-ci.yml"
+  push:
+    branches:
+      - fpsa-prime-v0
+    paths:
+      - "src/fpsa_prime/**"
+      - "experiments/fpsa_prime/**"
+      - "notebooks/FPSA_Prime_Verification.ipynb"
+      - "tests/test_fpsa_prime_*.py"
+      - ".github/workflows/fpsa-prime-ci.yml"
+
+jobs:
+  cpu-correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas matplotlib pytest
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Compile FPSA-Prime
+        run: |
+          python -m compileall -q src/fpsa_prime experiments/fpsa_prime tests/test_fpsa_prime_*.py
+          python -m json.tool notebooks/FPSA_Prime_Verification.ipynb >/dev/null
+      - name: Run correctness suite
+        run: |
+          python -m pytest tests/test_fpsa_prime_*.py -q
+      - name: Run portable numerical verification and tiny training smoke
+        run: |
+          python - <<'PY'
+          from experiments.fpsa_prime.verification_portable import run_verification
+          run_verification(
+              output_dir="results/verification_ci",
+              device="cpu",
+              quick=True,
+              run_tests=False,
+              run_training=True,
+          )
+          PY
+      - name: Run public controlled-comparison entry point
+        run: |
+          python -m experiments.fpsa_prime.controlled_compare \
+            --family prime \
+            --arch fpsa_prime \
+            --task maze \
+            --maze_size 5 \
+            --extra_sizes \
+            --device cpu \
+            --seed 0 \
+            --n_train 32 \
+            --n_test 16 \
+            --steps 3 \
+            --batch_size 8 \
+            --hidden 32 \
+            --heads 4 \
+            --max_iter 16 \
+            --max_iter_eval 32 \
+            --train_max_iter_ceiling 64 \
+            --eval_max_iter_ceiling 64 \
+            --stability_power_steps 1 \
+            --eval_every 1 \
+            --output results/verification_ci/controlled_compare_smoke.json
+      - name: Upload verification tables and plots
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpsa-prime-verification-${{ github.sha }}
+          path: results/verification_ci
+          if-no-files-found: error
+          retention-days: 14

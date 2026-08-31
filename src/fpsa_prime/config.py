@@ -1,0 +1,273 @@
+"""Configuration for FPSA-Prime.
+
+FPSA-Prime has exactly one recurrent state: a residual attention scratchpad.
+The token encoder and output decoder run once; only the attention map is
+repeated by the fixed-point solver.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Literal, Optional
+
+
+@dataclass
+class FPSAPrimeConfig:
+    # I/O
+    vocab_size: int = 10
+    out_vocab_size: int = 0
+    max_seq_len: int = 81
+    num_global_slots: int = 0
+
+    # Width and one-time encoder/decoder
+    hidden_size: int = 128
+    num_heads: int = 8
+    value_mode: Literal["dual", "evidence", "scratch"] = "dual"
+    evidence_fraction: float = 0.5
+    input_expansion: float = 2.0
+    output_expansion: float = 2.0
+    use_input_mlp: bool = True
+    use_output_mlp: bool = False
+    dropout: float = 0.0
+
+    # Position and structural bias
+    position_encoding: Literal["rope", "learned", "rope+learned", "none"] = "rope"
+    rope_theta: float = 10000.0
+    num_relation_types: int = 0
+    causal: bool = False
+
+    # Recurrent attention map Phi(R; A)
+    qk_normalize: bool = True
+    qk_norm_eps: float = 1e-6
+    temperature_init: float = 0.20
+    temperature_min: float = 0.03
+    evidence_gate_init: float = 0.90
+    scratch_gate_init: float = 0.20
+    output_init_std: float = 0.02
+
+    # Soft local stability control.  This regularises the measured Jacobian
+    # feedback near solved states instead of hard-capping Q/K/O projections.
+    stability_weight: float = 0.0
+    stability_target: float = 0.95
+    stability_power_steps: int = 1
+    stability_fd_eps: float = 1e-3
+
+    # Forward equilibrium solver. Damping belongs to the numerical solver, not
+    # the architectural fixed-point equation R = Phi(R; A).
+    forward_solver: Literal["picard", "anderson"] = "anderson"
+    max_iter: int = 24
+    max_iter_eval: int = 64
+    fp_tol: float = 1e-4
+    solver_damping: float = 0.8
+    min_damping: float = 0.05
+    damping_decay: float = 0.5
+    stall_patience: int = 4
+    anderson_m: int = 6
+    anderson_beta: float = 1.0
+    anderson_lam: float = 1e-4
+    init_std: float = 0.0
+
+    # Forward semantics and gradient semantics are separate.  In particular, a
+    # fixed-unroll BPTT model must be evaluated with the same fixed-unroll
+    # computation rather than silently switching to an equilibrium solver.
+    forward_mode: Literal["equilibrium", "fixed_unroll"] = "equilibrium"
+    backward_mode: Literal["implicit", "bptt", "one_step"] = "implicit"
+    # Deprecated compatibility alias.  ``grad_mode="bptt"`` maps to
+    # forward_mode="fixed_unroll", backward_mode="bptt".
+    grad_mode: Optional[Literal["implicit", "bptt", "one_step"]] = None
+    backward_solver: Literal["gmres", "neumann"] = "gmres"
+    backward_max_iter: int = 40
+    backward_tol: float = 1e-5
+    gmres_restart: int = 20
+
+    # Readout and diagnostics. The learned verifier is opt-in because it must be
+    # trained with a task-specific correctness/energy target before it can rank
+    # particles meaningfully.
+    use_verifier_head: bool = False
+    rms_norm_eps: float = 1e-5
+    # Implicit differentiation is an equilibrium gradient only after the
+    # forward and adjoint systems meet their tolerances.  The safe default is
+    # therefore fail-fast; experiments may opt out explicitly for diagnostics.
+    require_convergence: bool = True
+    require_backward_convergence: bool = True
+
+    def __post_init__(self) -> None:
+        if self.grad_mode is not None:
+            # Preserve old experiment configs while removing the train/eval
+            # semantic mismatch that the overloaded field created.
+            self.backward_mode = self.grad_mode
+            if self.grad_mode == "bptt":
+                self.forward_mode = "fixed_unroll"
+            else:
+                self.forward_mode = "equilibrium"
+
+        valid_options = {
+            "value_mode": ({"dual", "evidence", "scratch"}, self.value_mode),
+            "position_encoding": (
+                {"rope", "learned", "rope+learned", "none"},
+                self.position_encoding,
+            ),
+            "forward_solver": ({"picard", "anderson"}, self.forward_solver),
+            "forward_mode": ({"equilibrium", "fixed_unroll"}, self.forward_mode),
+            "backward_mode": ({"implicit", "bptt", "one_step"}, self.backward_mode),
+            "backward_solver": ({"gmres", "neumann"}, self.backward_solver),
+        }
+        for name, (allowed, value) in valid_options.items():
+            if value not in allowed:
+                raise ValueError(f"invalid {name}={value!r}; choose from {sorted(allowed)}")
+        if self.forward_mode == "fixed_unroll" and self.backward_mode != "bptt":
+            raise ValueError("fixed_unroll forward mode requires bptt backward mode")
+        if self.forward_mode == "equilibrium" and self.backward_mode == "bptt":
+            raise ValueError("equilibrium forward mode does not support bptt backward mode")
+        if self.vocab_size <= 0 or self.out_vocab_size < 0:
+            raise ValueError("vocabulary sizes must be positive (or zero for tied output)")
+        if self.max_seq_len <= 0:
+            raise ValueError("max_seq_len must be positive")
+        if self.hidden_size <= 0 or self.num_heads <= 0:
+            raise ValueError("hidden_size and num_heads must be positive")
+        if self.hidden_size % self.num_heads != 0:
+            raise ValueError("hidden_size must be divisible by num_heads")
+        if self.position_encoding in ("rope", "rope+learned"):
+            if (self.hidden_size // self.num_heads) % 2:
+                raise ValueError("RoPE requires an even head dimension")
+        if self.value_mode == "dual" and self.num_heads < 2:
+            raise ValueError("dual value mode needs at least two heads")
+        if not 0.0 < self.evidence_fraction < 1.0 and self.value_mode == "dual":
+            raise ValueError("evidence_fraction must be in (0, 1) for dual mode")
+        if self.input_expansion <= 0 or self.output_expansion <= 0:
+            raise ValueError("MLP expansion factors must be positive")
+        if not 0.0 <= self.dropout < 1.0:
+            raise ValueError("dropout must be in [0, 1)")
+        if self.rope_theta <= 0:
+            raise ValueError("rope_theta must be positive")
+        if self.qk_norm_eps <= 0 or self.rms_norm_eps <= 0:
+            raise ValueError("normalization epsilons must be positive")
+        if self.temperature_min <= 0 or self.temperature_init <= self.temperature_min:
+            raise ValueError("temperature_init must exceed a positive temperature_min")
+        for name, value in (
+            ("evidence_gate_init", self.evidence_gate_init),
+            ("scratch_gate_init", self.scratch_gate_init),
+        ):
+            if not 0.0 < value < 1.0:
+                raise ValueError(f"{name} must be in (0, 1)")
+        if self.output_init_std <= 0:
+            raise ValueError("output_init_std must be positive")
+        if self.stability_weight < 0:
+            raise ValueError("stability_weight cannot be negative")
+        if self.stability_target <= 0:
+            raise ValueError("stability_target must be positive")
+        if self.stability_power_steps <= 0 or self.stability_fd_eps <= 0:
+            raise ValueError("stability power steps and finite-difference epsilon must be positive")
+        if not 0.0 < self.solver_damping <= 1.0:
+            raise ValueError("solver_damping must be in (0, 1]")
+        if not 0.0 < self.min_damping <= self.solver_damping:
+            raise ValueError("min_damping must be in (0, solver_damping]")
+        if not 0.0 < self.damping_decay <= 1.0:
+            raise ValueError("damping_decay must be in (0, 1]")
+        if self.stall_patience <= 0:
+            raise ValueError("stall_patience must be positive")
+        if self.max_iter <= 0 or self.max_iter_eval <= 0:
+            raise ValueError("iteration budgets must be positive")
+        if self.fp_tol <= 0 or self.backward_tol <= 0:
+            raise ValueError("solver tolerances must be positive")
+        if self.anderson_m <= 0 or self.backward_max_iter <= 0:
+            raise ValueError("solver iteration counts must be positive")
+        if not 0.0 <= self.anderson_beta <= 1.0:
+            raise ValueError("anderson_beta must be in [0, 1]")
+        if self.anderson_lam < 0:
+            raise ValueError("anderson_lam cannot be negative")
+        if self.gmres_restart <= 0:
+            raise ValueError("gmres_restart must be positive")
+        if self.init_std < 0:
+            raise ValueError("init_std cannot be negative")
+        if self.num_relation_types < 0 or self.num_global_slots < 0:
+            raise ValueError("relation types and global slots cannot be negative")
+
+    @property
+    def head_dim(self) -> int:
+        return self.hidden_size // self.num_heads
+
+    @property
+    def num_evidence_heads(self) -> int:
+        if self.value_mode == "evidence":
+            return self.num_heads
+        if self.value_mode == "scratch":
+            return 0
+        count = int(round(self.num_heads * self.evidence_fraction))
+        return min(self.num_heads - 1, max(1, count))
+
+    @property
+    def num_scratch_heads(self) -> int:
+        return self.num_heads - self.num_evidence_heads
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+ARCH_PRESETS = {
+    # Parameter-matched hero: one nonlinear encoder MLP, no post-equilibrium
+    # decoder MLP.  At d=128 this is within 1% of the 135,558-parameter
+    # block-DEQ control used by the Maze experiments.
+    "fpsa_prime": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    "fpsa_fixed_v": dict(
+        value_mode="evidence",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    "fpsa_dynamic_v": dict(
+        value_mode="scratch",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    # Matched decoder-only control: same parameter budget, but the one-time MLP
+    # is after the equilibrium instead of before it.
+    "fpsa_prime_decoder_mlp": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=False,
+        use_output_mlp=True,
+    ),
+    # Capacity control retaining the original two one-time MLPs.
+    "fpsa_prime_full": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="implicit",
+        use_input_mlp=True,
+        use_output_mlp=True,
+    ),
+    # Finite-unroll control.  The same damped T-step recurrence is used in both
+    # training and evaluation; it never silently switches to Anderson at eval.
+    "fpsa_prime_bptt": dict(
+        value_mode="dual",
+        forward_mode="fixed_unroll",
+        backward_mode="bptt",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+    "fpsa_prime_one_step": dict(
+        value_mode="dual",
+        forward_mode="equilibrium",
+        backward_mode="one_step",
+        use_input_mlp=True,
+        use_output_mlp=False,
+    ),
+}
+
+
+def build_config(arch: str = "fpsa_prime", **overrides) -> FPSAPrimeConfig:
+    if arch not in ARCH_PRESETS:
+        raise KeyError(f"unknown architecture {arch!r}; choose from {sorted(ARCH_PRESETS)}")
+    values = dict(ARCH_PRESETS[arch])
+    values.update(overrides)
+    return FPSAPrimeConfig(**values)
