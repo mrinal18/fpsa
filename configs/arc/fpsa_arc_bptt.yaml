@@ -1,0 +1,25 @@
+# Generated FPSA ARC config; explicit ablation, not a benchmark claim.
+name: fpsa_arc@FPSAARC_ACTV1
+loss:
+  name: fpsa_arc@ARCLossHead
+  loss_type: stablemax_cross_entropy
+kind: answer_refine
+hidden_size: 512
+num_heads: 8
+layers: 2
+expansion: 4.0
+puzzle_emb_ndim: 512
+puzzle_emb_len: 16
+halt_max_steps: 16
+halt_exploration_prob: 0.1
+value_mode: evidence
+mode: unroll
+operator: attention
+max_iter: 6
+max_iter_eval: 6
+fp_tol: 0.0001
+damping: 0.8
+backward_max_iter: 64
+backward_tol: 1.0e-05
+stability_weight: 0.0
+stability_probes: 2

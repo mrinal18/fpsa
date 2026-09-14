@@ -1,0 +1,15 @@
+numpy
+pytest
+pyyaml
+pandas
+matplotlib
+pydantic>=2
+argdantic
+adam-atan2
+einops
+tqdm
+coolname
+wandb
+omegaconf
+hydra-core
+numba
