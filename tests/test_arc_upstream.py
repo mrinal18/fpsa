@@ -100,26 +100,20 @@ def test_official_ema_changes_dense_weights_not_task_table(upstream):
     assert torch.allclose(model.inner.core.embedding.weight,original+2.)
 
 
-def test_official_hydra_entry_resolves_both_model_configs_without_cuda(upstream, tmp_path):
-    for dependency in ['hydra', 'wandb', 'coolname', 'adam_atan2', 'argdantic']:
-        pytest.importorskip(dependency)
-    import subprocess
-    import yaml
-    from experiments.arc.upstream import install_shims, ROOT
+def test_official_hydra_config_composes_both_models_without_cuda(upstream, tmp_path):
+    # Config composition must not import the fused CUDA optimizer on CPU.
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+    from experiments.arc.upstream import install_shims
     install_shims(upstream)
-    env = os.environ.copy()
-    env['PYTHONPATH'] = str(ROOT) + os.pathsep + str(upstream)
     for arch in ['fpsa_arc_refine', 'trm']:
-        command = [sys.executable, '-m', 'experiments.arc.official_entry',
-                   '--upstream', str(upstream), '--cfg', 'job', '--resolve',
-                   f'arch={arch}', f'+checkpoint_path={tmp_path}',
-                   '+run_name=config_test', 'ema=True',
-                   '+eval_save_outputs=[inputs,puzzle_identifiers,q_halt_logits,preds]',
-                   'evaluators=[{name:arc@ARC,aggregated_voting:false}]']
-        result = subprocess.run(command, cwd=ROOT, env=env, text=True,
-                                capture_output=True, timeout=60)
-        assert result.returncode == 0, result.stdout + result.stderr
-        resolved = yaml.safe_load(result.stdout)
+        with initialize_config_dir(config_dir=str(upstream / 'config'), version_base=None):
+            resolved = compose(config_name='cfg_pretrain', overrides=[
+                f'arch={arch}', f'+checkpoint_path={tmp_path}',
+                '+run_name=config_test', 'ema=True',
+                '+eval_save_outputs=[inputs,puzzle_identifiers,q_halt_logits,preds]',
+                'evaluators=[{name:arc@ARC,aggregated_voting:false}]'])
+            resolved = OmegaConf.to_container(resolved, resolve=True)
         assert resolved['ema'] is True
         assert resolved['evaluators'][0]['aggregated_voting'] is False
         assert 'preds' in resolved['eval_save_outputs']

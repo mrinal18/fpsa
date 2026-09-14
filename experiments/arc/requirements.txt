@@ -5,7 +5,7 @@ pandas
 matplotlib
 pydantic>=2
 argdantic
-adam-atan2
+adam-atan2==0.0.3
 einops
 tqdm
 coolname
@@ -13,3 +13,7 @@ wandb
 omegaconf
 hydra-core
 numba
+ninja
+packaging
+wheel
+setuptools

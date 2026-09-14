@@ -65,9 +65,8 @@ def main():
     print('$ ' + shlex.join(command), flush=True)
     if a.dry_run:
         return
-    import torch
-    if not torch.cuda.is_available():
-        raise RuntimeError('Full official trainer requires CUDA; use experiments.arc.smoke on CPU')
+    from .preflight import check_cuda_optimizer
+    print('CUDA_PREFLIGHT=' + json.dumps(check_cuda_optimizer()), flush=True)
     if run_dir.exists() and any(run_dir.iterdir()):
         raise FileExistsError('Use a NEW run directory; old weights/results will not be overwritten')
     run_dir.mkdir(parents=True, exist_ok=True)
