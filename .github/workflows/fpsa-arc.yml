@@ -1,0 +1,45 @@
+name: FPSA ARC correctness
+on:
+  push:
+    branches: [fpsa-r-arc-refinement]
+  pull_request:
+    paths: ['src/fpsa_arc/**', 'experiments/arc/**', 'tests/test_arc_*.py', '.github/workflows/fpsa-arc.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      FPSA_TRM_REFERENCE: /tmp/trm-reference
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Archive exact source and pinned reference
+        run: |
+          mkdir -p artifacts
+          git archive HEAD > artifacts/fpsa-source.tar
+          git rev-parse HEAD > artifacts/source-sha.txt
+          git clone -q https://github.com/SamsungSAILMontreal/TinyRecursiveModels.git /tmp/trm-reference
+          git -C /tmp/trm-reference checkout -q c01103738605ba39d1430519b1ee0c62f4c707f8
+          git -C /tmp/trm-reference archive HEAD > artifacts/trm-reference.tar
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r experiments/arc/requirements.txt
+      - name: Check source
+        run: |
+          python -m compileall -q src/fpsa_r src/fpsa_arc experiments/arc
+          python -m pytest tests/test_arc_*.py tests/test_fpsa_r.py -q
+          python -m experiments.arc.smoke --steps 40 --output artifacts/arc-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fpsa-arc-source-${{ github.sha }}
+          path: artifacts/
+          retention-days: 7
